@@ -1,0 +1,100 @@
+import json
+import os
+from collections import defaultdict
+
+from commit_style.data import Example
+from commit_style.judge import judge_candidates
+from commit_style.llm.base import LLMClient
+from commit_style.metrics import bertscore_batch, chrf_score, meteor_score
+from commit_style.strategies import STRATEGIES
+
+
+def run_pipeline(
+    examples: list[Example],
+    strategies: list[str],
+    gen_llm: LLMClient,
+    judge_llms: dict[str, LLMClient],
+    gen_backend_name: str = "",
+    gen_model_name: str = "",
+    with_bertscore: bool = False,
+) -> list[dict]:
+    rows = []
+    for example in examples:
+        for strategy_name in strategies:
+            try:
+                strategy_fn = STRATEGIES[strategy_name]
+                candidate = strategy_fn(gen_llm, example)
+                judge_scores = judge_candidates(judge_llms, example, candidate)
+                metrics = {
+                    "chrf": chrf_score(candidate.continuation, example.reference_completion),
+                    "meteor": meteor_score(candidate.continuation, example.reference_completion),
+                }
+            except Exception as e:
+                print(
+                    f"[run_pipeline] skipping example={example.id} strategy={strategy_name} "
+                    f"after a persistent error: {e}"
+                )
+                continue
+            rows.append(
+                {
+                    "example_id": example.id,
+                    "repo_name": example.repo_name,
+                    "language": example.language,
+                    "strategy": candidate.strategy,
+                    "prefix": example.prefix,
+                    "reference_completion": example.reference_completion,
+                    "reference_full_message": example.reference_full_message,
+                    "candidate_continuation": candidate.continuation,
+                    "candidate_full_message": candidate.full_message,
+                    "artifacts": candidate.artifacts,
+                    "judge_scores": {jid: s.model_dump() for jid, s in judge_scores.items()},
+                    "metrics": metrics,
+                    "backend": gen_backend_name,
+                    "model_name": gen_model_name,
+                }
+            )
+
+    if with_bertscore and rows:
+        preds = [row["candidate_continuation"] for row in rows]
+        refs = [row["reference_completion"] for row in rows]
+        bert = bertscore_batch(preds, refs)
+        for i, row in enumerate(rows):
+            row["metrics"]["bertscore_f1"] = bert["f1"][i]
+
+    return rows
+
+
+def write_jsonl(rows: list[dict], path: str) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+
+def summarize(rows: list[dict]) -> str:
+    judge_ids: list[str] = []
+    for row in rows:
+        for jid in row["judge_scores"]:
+            if jid not in judge_ids:
+                judge_ids.append(jid)
+
+    blocks = []
+    for jid in judge_ids:
+        by_strategy: dict[str, list[dict]] = defaultdict(list)
+        for row in rows:
+            if jid in row["judge_scores"]:
+                by_strategy[row["strategy"]].append(row["judge_scores"][jid])
+
+        lines = [f"--- judge: {jid} ---"]
+        lines.append(f"{'strategy':<18}{'n':>4}{'coherence':>12}{'fluency':>10}{'correctness':>14}")
+        for strategy_name, scores in by_strategy.items():
+            n = len(scores)
+            mean_coherence = sum(s["coherence"] for s in scores) / n
+            mean_fluency = sum(s["fluency"] for s in scores) / n
+            mean_correctness = sum(s["correctness"] for s in scores) / n
+            lines.append(
+                f"{strategy_name:<18}{n:>4}{mean_coherence:>12.2f}{mean_fluency:>10.2f}{mean_correctness:>14.2f}"
+            )
+        blocks.append("\n".join(lines))
+
+    return "\n\n".join(blocks)
