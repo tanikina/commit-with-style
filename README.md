@@ -75,15 +75,34 @@ split evenly.
 
 ## LLM backends
 
-`commit_style/llm/` exposes one `LLMClient` interface with three implementations, selected
+`commit_style/llm/` exposes one `LLMClient` interface with four implementations, selected
 via `--backend`:
 
-- `mock` (default) — deterministic, no network/model, used to validate pipeline wiring.
+- `vllm` (default everywhere local generation happens — see below) — a local Hugging Face
+  model served via `vllm.LLM`, optionally with a LoRA adapter (`adapter_path`, see
+  Fine-tuning below; requires `enable_lora`/`max_lora_rank` at engine-construction time).
+  Much faster than `local_hf` for anything beyond a tiny model. Install with
+  `pip install -e .[vllm]` (GPU required). **This changes the previous zero-dependency
+  default** — pass `--backend mock` explicitly for a no-GPU, no-model dry run.
+- `mock` — deterministic, no network/model, used to validate pipeline wiring.
 - `grazie` — JetBrains' internal Grazie API gateway, e.g. `google-gemini-3-5-flash`. Requires
   a JWT token (see below).
-- `local_hf` — a small local Hugging Face model (e.g. `Qwen/Qwen2.5-0.5B-Instruct`) via
-  `transformers`, optionally with a LoRA adapter (`adapter_path`, see Fine-tuning below). A
-  full Qwen3.5-4B run is deferred to a future, larger GPU VM.
+- `local_hf` — a small local Hugging Face model (e.g. `Qwen/Qwen2.5-0.5B-Instruct`) via plain
+  `transformers`, optionally with a LoRA adapter. Kept around as the simpler/lighter-weight
+  path when vLLM isn't installed or a GPU isn't available for it.
+
+vLLM is generation/inference only — it has no gradient-based training capability, so LoRA
+training (`commit_style/finetune/train.py`, `transformers.Trainer` + `peft`) always runs on
+`local_hf`-style loading regardless of `--backend`/`--gen-backend`/`--training-target-backend`.
+
+On a small GPU, `scripts/finetune_qwen.py --training-target-backend vllm` (target generation)
+followed by real LoRA training, followed by `--gen-backend vllm` (final eval) in one process
+can OOM if each phase's GPU memory isn't released before the next claims it — vLLM's engine
+runs in a subprocess that holds its `gpu_memory_utilization` reservation until the client
+object is garbage-collected, and `transformers.Trainer`'s CUDA allocations stay cached by
+PyTorch even after `train_one_config` returns. `finetune_qwen.py` handles both handoffs
+already (dropping the target-generation client right after caching its output, and calling
+`torch.cuda.empty_cache()` right after training completes) — no extra flags needed.
 
 Structured output (`ChangePlan`, `VerificationResult`, `JudgeScores`) is enforced the same
 way across all backends: instruct the model to emit JSON matching the pydantic schema, parse
@@ -103,8 +122,11 @@ Never commit a token file (`jwt_token.txt` is gitignored).
 ## Running it
 
 ```bash
-# mock dry run (no network) — 12 stratified examples x 3 strategies
-.venv/bin/python scripts/run_prototype.py
+# mock dry run (no network, no GPU) — 12 stratified examples x 3 strategies
+.venv/bin/python scripts/run_prototype.py --backend mock
+
+# default backend is vllm — local GPU generation, e.g. with a real model
+.venv/bin/python scripts/run_prototype.py --model Qwen/Qwen2.5-0.5B-Instruct
 
 # live run against Grazie/Gemini
 .venv/bin/python scripts/run_prototype.py \
@@ -191,11 +213,13 @@ What it does:
    (`commit_style/finetune/train.py`). Each config's adapter is saved under
    `--output-dir/config_N`; validation loss is printed as a table and written to
    `hp_search_results.json`.
-3. Picks the config with the lowest `eval_loss`, loads it as a `LocalHFClient` adapter
-   (`adapter_path=...`) — the fine-tuned model becomes just another pluggable `LLMClient` —
-   and evaluates it on the full `--n-test` set with `judge_candidate` and the
-   `chrf`/`meteor`(/`bertscore`) metrics, unchanged from the prompting-strategy pipeline
-   (`commit_style/finetune/evaluate.py`).
+3. Picks the config with the lowest `eval_loss`, loads it as a `--gen-backend` adapter
+   (`adapter_path=...`, default `vllm` for fast generation) — the fine-tuned model becomes
+   just another pluggable `LLMClient` — and evaluates it on the full `--n-test` set with
+   `judge_candidate` and the `chrf`/`meteor`(/`bertscore`) metrics, unchanged from the
+   prompting-strategy pipeline (`commit_style/finetune/evaluate.py`). LoRA training itself
+   (step 2) always runs on plain `transformers`+`peft` — `--gen-backend` only affects this
+   final evaluation generation pass.
 4. Writes `--out` (default `outputs/finetune_eval.jsonl`, rows with `strategy ==
    "finetuned"`) and prints the same summary table as `run_prototype.py` — concatenate it
    with a `dry_run.jsonl` from `run_prototype.py` for a side-by-side comparison.
@@ -221,6 +245,9 @@ Notes:
 - `--load-in-4bit` (QLoRA via `bitsandbytes`) is wired for that future larger-model/GPU-VM
   case but **untested** this session — install it via `.venv/bin/pip install -e ".[qlora]"`
   first.
+- `--gen-backend` (default `vllm`) controls only the final judged-eval generation pass, not
+  training — see [LLM backends](#llm-backends). Pass `--gen-backend mock` for a no-GPU dry
+  run of that final pass, or `--gen-backend local_hf` for the plain-`transformers` path.
 - `--judge`/`--grazie-token-file` work exactly like `run_prototype.py`'s equivalent flags
   (repeatable `--judge BACKEND:MODEL`; defaults to a single `mock` judge if omitted). See
   [Comparing multiple judges](#comparing-multiple-judges) above.
@@ -231,12 +258,27 @@ By default, fine-tuning trains on the dataset's human-written `reference_complet
 every `--n-train` example, unchanged from Phase 2. `--training-target generated` instead
 generates each training example's target by running one prompting strategy (default
 `structured`, any of `vanilla`/`structured`/`reference_guided` via
-`--training-target-strategy`) through a generator LLM (default `grazie:google-gemini-3-5-flash`,
-override with `--training-target-backend`/`--training-target-model`) and substituting the
-strategy's `continuation` for `reference_completion` — a form of distillation from the
-prompted model into the fine-tuned Qwen model, rather than training on the raw human label.
-Everything else about an `Example` (diff, history, prefix, `reference_full_message`) is left
-untouched, so evaluation still compares against the original human reference.
+`--training-target-strategy`) through a generator LLM and substituting the strategy's
+`continuation` for `reference_completion` — a form of distillation from the prompted model
+into the fine-tuned Qwen model, rather than training on the raw human label. Everything else
+about an `Example` (diff, history, prefix, `reference_full_message`) is left untouched, so
+evaluation still compares against the original human reference.
+
+`--training-target-backend` defaults to `vllm` (with `--training-target-model` defaulting to
+the tiny local stand-in model, `Qwen/Qwen2.5-0.5B-Instruct`) for fast local generation — e.g.
+to distill from a bigger local model like `Qwen/Qwen3.5-9B`:
+
+```bash
+.venv/bin/python scripts/finetune_qwen.py \
+  --training-target generated \
+  --training-target-strategy structured \
+  --training-target-backend vllm --training-target-model Qwen/Qwen3.5-9B \
+  --n-train 1000 --n-strategy-val 200 --n-test 300 \
+  --output-dir outputs/finetune_generated \
+  --out outputs/finetune_eval_generated.jsonl
+```
+
+Or generate against the Grazie gateway instead, e.g. `google-gemini-3-5-flash`:
 
 ```bash
 .venv/bin/python scripts/finetune_qwen.py \
@@ -249,26 +291,36 @@ untouched, so evaluation still compares against the original human reference.
   --out outputs/finetune_eval_generated.jsonl
 ```
 
-**Cost note:** generating targets for 1000 training examples means ~1000 real API calls for
-`vanilla`/`reference_guided`, or ~3000 for `structured` (plan + generate + verify per
-example) — do a small `--n-train` real-backend check before running the full 1000. Results
-are cached to `--training-targets-cache` (default
-`outputs/training_targets_cache.jsonl`, keyed by example id); a rerun with the same
-`--n-train`/`--seed`/`--data` reuses the cache instead of re-paying for generation, and only
-regenerates (overwriting the cache) if any example id in the current run isn't already
-covered by it.
+**Cost note:** generating targets for 1000 training examples via a live API (`grazie`) means
+~1000 real calls for `vanilla`/`reference_guided`, or ~3000 for `structured` (plan + generate
++ verify per example) — do a small `--n-train` real-backend check before running the full
+1000; this cost doesn't apply to local `vllm`/`local_hf` generation. Results are cached to
+`--training-targets-cache` (default `outputs/training_targets_cache.jsonl`, keyed by example
+id); a rerun with the same `--n-train`/`--seed`/`--data` reuses the cache instead of
+re-paying for generation, and only regenerates (overwriting the cache) if any example id in
+the current run isn't already covered by it.
 
 #### Generating targets standalone
 
 `scripts/generate_training_targets.py` runs just the generation step above — no hp-search,
 no training, no eval — so you can pre-populate the cache (e.g. once per strategy you want to
-compare) without committing to a full fine-tuning run each time:
+compare) without committing to a full fine-tuning run each time. Its `--backend` defaults to
+`grazie` (unlike `finetune_qwen.py --training-target-backend`, which defaults to `vllm`) —
+pre-paying the cost of a live-API distillation run once is this script's main use case — but
+also accepts `vllm`, e.g. to distill from a bigger local model like `Qwen/Qwen3.5-9B`:
 
 ```bash
 .venv/bin/python scripts/generate_training_targets.py \
   --strategy structured \
   --backend grazie --model google-gemini-3-5-flash \
   --grazie-token-file jwt_token.txt \
+  --n-train 1000 --n-strategy-val 200 --n-test 300 \
+  --out outputs/training_targets_structured.jsonl
+
+# or generate locally via vllm with a bigger model, for speed
+.venv/bin/python scripts/generate_training_targets.py \
+  --strategy structured \
+  --backend vllm --model Qwen/Qwen3.5-9B \
   --n-train 1000 --n-strategy-val 200 --n-test 300 \
   --out outputs/training_targets_structured.jsonl
 ```
@@ -409,6 +461,10 @@ runs, not for the one-time hp-search.
 
 ### 5. Full command sequence
 
+Every invocation below relies on `--gen-backend`'s default (`vllm`) for the final judged-eval
+generation pass — LoRA training itself is unaffected by this flag either way. Pass
+`--gen-backend local_hf` if vLLM isn't installed/available on the target machine.
+
 ```bash
 # 1. hp-search once, on vanilla, intersection-restricted -> outputs/ft/hp_search/best_lora_params.json
 .venv/bin/python scripts/finetune_qwen.py \
@@ -469,13 +525,14 @@ randomness to average over, so there's no `--train-seed`/seed-replicate loop her
 
 ```bash
 .venv/bin/python scripts/eval_base_model.py \
-  --model-name Qwen/Qwen3-4B --seed 0 --n-train 1000 --n-strategy-val 200 --n-test 300 \
-  --n-final-eval 200 --run-label base_qwen3_4b \
-  --out outputs/ft/base_qwen3_4b/eval.jsonl \
+  --model-name Qwen/Qwen3.5-4B --backend vllm --seed 0 \
+  --n-train 1000 --n-strategy-val 200 --n-test 300 \
+  --n-final-eval 200 --run-label base_qwen3_5_4b \
+  --out outputs/ft/base_qwen3_5_4b/eval.jsonl \
   --judge grazie:google-gemini-3-5-flash --grazie-token-file jwt_token.txt
 ```
 
 Output rows are shaped identically to the fine-tuned runs' (including the `usage`
-cost/latency field), so `outputs/ft/base_qwen3_4b/eval.jsonl` can be concatenated with the 15
+cost/latency field), so `outputs/ft/base_qwen3_5_4b/eval.jsonl` can be concatenated with the 15
 conditions' `eval.jsonl` files and fed straight into `commit_style.pipeline.summarize()` for a
 single side-by-side comparison table, keyed off `--run-label`/`strategy`.
