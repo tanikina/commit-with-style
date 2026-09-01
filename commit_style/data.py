@@ -119,8 +119,20 @@ def _assign_repos_to_splits(
     return pools
 
 
-def _stratify_by_prefix_length(rows: list[dict], quota: int, n_bins: int, rng: random.Random) -> list[dict]:
-    """Sample `quota` rows drawn evenly across `n_bins` prefix-length buckets (short/medium/long)."""
+def _stratify_by_prefix_length(
+    rows: list[dict],
+    quota: int,
+    n_bins: int,
+    rng: random.Random,
+    distribute_remainder: bool = False,
+) -> list[dict]:
+    """Sample `quota` rows drawn evenly across `n_bins` prefix-length buckets (short/medium/long).
+
+    `distribute_remainder` defaults to False to preserve `load_project_splits`'s exact
+    existing behavior (and thus its already-computed ids) — it drops `quota % n_bins` rows via
+    floor division. Pass True (only from `load_final_eval_split`) to instead spread that
+    remainder across the first few bins so the quota is actually met when enough rows exist.
+    """
     if len(rows) <= quota:
         return rows
 
@@ -131,10 +143,15 @@ def _stratify_by_prefix_length(rows: list[dict], quota: int, n_bins: int, rng: r
     for b in bins:
         rng.shuffle(b)
 
-    per_bin = max(1, quota // len(bins))
+    if distribute_remainder:
+        base, rem = divmod(quota, len(bins))
+        per_bin_counts = [base + 1 if i < rem else base for i in range(len(bins))]
+    else:
+        per_bin_counts = [max(1, quota // len(bins))] * len(bins)
+
     selected: list[dict] = []
-    for b in bins:
-        selected.extend(b[:per_bin])
+    for b, count in zip(bins, per_bin_counts):
+        selected.extend(b[:count])
     rng.shuffle(selected)
     return selected[:quota]
 
@@ -204,3 +221,113 @@ def load_project_splits(
             for row in rows
         ]
     return examples["train"], examples["strategy_val"], examples["finetune_test"]
+
+
+def _water_fill_quotas(available: dict[str, int], target_total: int) -> dict[str, int]:
+    """Distribute `target_total` across keys proportional to `available` headroom, saturating
+    keys that run out before their proportional share is met and redistributing the leftover
+    to the remaining keys (water-filling), so the returned quotas always sum to
+    `min(target_total, sum(available.values()))`.
+    """
+    remaining_keys = set(available)
+    quotas = {k: 0 for k in available}
+    remaining_target = min(target_total, sum(available.values()))
+
+    while remaining_target > 0 and remaining_keys:
+        pool = sum(available[k] - quotas[k] for k in remaining_keys)
+        if pool <= 0:
+            break
+        progressed = False
+        for k in list(remaining_keys):
+            headroom = available[k] - quotas[k]
+            share = min(headroom, round(remaining_target * headroom / pool))
+            if share > 0:
+                quotas[k] += share
+                remaining_target -= share
+                progressed = True
+            if quotas[k] >= available[k]:
+                remaining_keys.discard(k)
+        if not progressed:
+            # Rounding stalled with target left over — hand it to whichever key has headroom.
+            for k in list(remaining_keys):
+                headroom = available[k] - quotas[k]
+                take = min(headroom, remaining_target)
+                quotas[k] += take
+                remaining_target -= take
+                if quotas[k] >= available[k]:
+                    remaining_keys.discard(k)
+                if remaining_target <= 0:
+                    break
+
+    return quotas
+
+
+def load_final_eval_split(
+    path: str,
+    n_final_eval: int = 200,
+    seed: int = 0,
+    n_train: int = 1000,
+    n_strategy_val: int = 200,
+    n_finetune_test: int = 300,
+    languages: list[str] | None = None,
+    max_diff_chars: int = 4000,
+    max_history_messages: int = 5,
+    n_prefix_bins: int = 3,
+) -> list[Example]:
+    """A 4th, repo-disjoint holdout carved from repos that contributed zero rows to
+    train/strategy_val/finetune_test (computed with the same args).
+
+    Calls `load_project_splits` unmodified first so its own repo assignment is never
+    perturbed, then builds this split only from genuinely-unused repos, water-filling
+    per-language quotas since leftover availability is uneven across languages.
+    """
+    train, strategy_val, finetune_test = load_project_splits(
+        path,
+        n_train=n_train,
+        n_strategy_val=n_strategy_val,
+        n_finetune_test=n_finetune_test,
+        seed=seed,
+        languages=languages,
+        max_diff_chars=max_diff_chars,
+        max_history_messages=max_history_messages,
+        n_prefix_bins=n_prefix_bins,
+    )
+    used_repos = {e.repo_name for e in train} | {e.repo_name for e in strategy_val} | {e.repo_name for e in finetune_test}
+
+    rng = random.Random(seed)
+    repo_rows: dict[str, list[dict]] = {}
+    repo_lang: dict[str, str] = {}
+    with open(path, "r") as f:
+        for line in f:
+            row = json.loads(line)
+            lang = row["repo_main_language"]
+            if languages is not None and lang not in languages:
+                continue
+            repo = row["repo_name"]
+            if repo in used_repos:
+                continue
+            repo_rows.setdefault(repo, []).append(row)
+            repo_lang.setdefault(repo, lang)
+
+    repos_by_lang: dict[str, list[str]] = {}
+    for repo, lang in repo_lang.items():
+        repos_by_lang.setdefault(lang, []).append(repo)
+
+    available = {lang: sum(len(repo_rows[r]) for r in repos) for lang, repos in repos_by_lang.items()}
+    quotas = _water_fill_quotas(available, n_final_eval)
+
+    selected_rows: list[dict] = []
+    for lang, repos in repos_by_lang.items():
+        rng.shuffle(repos)
+        quota = quotas.get(lang, 0)
+        pool = [row for repo in repos for row in repo_rows[repo]]
+        if len(pool) < quota:
+            print(f"[load_final_eval_split] warning: only {len(pool)}/{quota} rows available for lang={lang}")
+        selected_rows.extend(_stratify_by_prefix_length(pool, quota, n_prefix_bins, rng, distribute_remainder=True))
+
+    rng.shuffle(selected_rows)
+    selected_rows = selected_rows[:n_final_eval]
+    return [
+        _row_to_example(row, max_diff_chars=max_diff_chars, max_history_messages=max_history_messages)
+        for row in selected_rows
+    ]

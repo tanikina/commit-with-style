@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 from peft import LoraConfig, get_peft_model
-from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
+from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments, set_seed
 
 from commit_style.data import Example
 from commit_style.finetune.dataset import CommitSFTDataset, collate_batch
@@ -51,7 +51,9 @@ def train_one_config(
     grad_accum: int = 8,
     max_seq_length: int = 768,
     load_in_4bit: bool = False,
+    seed: int = 42,
 ) -> TrainResult:
+    set_seed(seed)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -101,6 +103,8 @@ def train_one_config(
         logging_steps=10,
         report_to=[],
         gradient_checkpointing=True,
+        seed=seed,
+        data_seed=seed,
     )
     trainer = Trainer(
         model=model,

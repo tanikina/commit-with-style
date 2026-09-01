@@ -58,11 +58,19 @@ class GrazieLLMClient(LLMClient):
             LLMParameters.Length: Parameters.IntValue(max_tokens),
         }
         attempt = 0
+        start = time.time()
         while True:
             try:
                 response = self._client.chat(
                     chat=chat, profile=self._profile, prompt_id=self._prompt_id, parameters=parameters
                 )
+                self.last_usage = {
+                    # Grazie's ChatResponse doesn't expose raw token counts, only quota
+                    # credits spent — leave the token fields None rather than estimate.
+                    "input_tokens": None,
+                    "output_tokens": None,
+                    "latency_s": time.time() - start,
+                }
                 return response.content
             except RequestFailedException as e:
                 message = str(e).lower()

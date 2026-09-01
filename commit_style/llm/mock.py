@@ -1,4 +1,5 @@
 import re
+import time
 
 from pydantic import BaseModel
 
@@ -13,13 +14,23 @@ class MockLLMClient(LLMClient):
     """Deterministic, network-free stand-in used to validate pipeline wiring."""
 
     def complete(self, system: str, user: str, max_tokens: int = 600) -> str:
+        start = time.time()
         prefix_match = _PREFIX_RE.search(user)
         prefix = prefix_match.group(1).strip() if prefix_match else ""
         diff_match = _DIFF_RE.search(user)
         n_files = diff_match.group(1).count("--- ") if diff_match else 0
         if prefix:
-            return f"solved issue across {n_files} file(s) via mock generation"
-        return f"Mock commit message touching {n_files} file(s)."
+            text = f"solved issue across {n_files} file(s) via mock generation"
+        else:
+            text = f"Mock commit message touching {n_files} file(s)."
+        # Word counts, not real tokenization — fine since mock has no real inference cost;
+        # this only exercises the usage-tracking plumbing in tests/smoke runs.
+        self.last_usage = {
+            "input_tokens": len(system.split()) + len(user.split()),
+            "output_tokens": len(text.split()),
+            "latency_s": time.time() - start,
+        }
+        return text
 
     def complete_json(
         self,

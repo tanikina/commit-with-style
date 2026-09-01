@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from commit_style.data import load_project_splits
+from commit_style.data import load_final_eval_split, load_project_splits
 from commit_style.finetune.evaluate import run_finetuned_eval
 from commit_style.finetune.hp_search import run_hp_search, pick_best
 from commit_style.finetune.synth_targets import (
@@ -34,6 +34,14 @@ def main() -> None:
     )
     parser.add_argument("--n-test", type=int, default=300)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--training-ids-file",
+        default=None,
+        help="Optional path to a plain-text file, one example id per line. Restricts "
+        "train_examples to this fixed set (e.g. an intersection of ids covered by several "
+        "--training-target generated caches) before any cache lookup, so multiple conditions "
+        "can be trained on the exact same fixed set of examples.",
+    )
     parser.add_argument("--max-diff-chars", type=int, default=4000)
     parser.add_argument("--max-history-messages", type=int, default=5)
     parser.add_argument("--max-seq-length", type=int, default=768)
@@ -41,6 +49,14 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--grad-accum", type=int, default=8)
     parser.add_argument("--load-in-4bit", action="store_true", help="Untested this session; for a future larger GPU.")
+    parser.add_argument(
+        "--train-seed",
+        type=int,
+        default=42,
+        help="Seed for training randomness only (weight init, dataloader shuffling) via "
+        "transformers.set_seed + TrainingArguments(seed=, data_seed=). Fully decoupled from "
+        "--seed, which only controls the data partition.",
+    )
     parser.add_argument(
         "--training-target",
         choices=["reference", "generated"],
@@ -84,6 +100,23 @@ def main() -> None:
     parser.add_argument("--grazie-token-file", default=None)
     parser.add_argument("--with-bertscore", action="store_true")
     parser.add_argument("--out", default="outputs/finetune_eval.jsonl")
+    parser.add_argument(
+        "--final-eval-split",
+        choices=["finetune_test", "final_eval"],
+        default="finetune_test",
+        help="'finetune_test' (default) judges the final model on the same --n-test split "
+        "that also feeds Trainer's eval_dataset/hp-search loss. 'final_eval' instead uses a "
+        "brand-new, independent load_final_eval_split holdout (see --n-final-eval) for the "
+        "judged comparison, while --n-test still feeds training-time eval loss unchanged.",
+    )
+    parser.add_argument("--n-final-eval", type=int, default=200)
+    parser.add_argument(
+        "--run-label",
+        default="finetuned",
+        help="Value written to each output row's 'strategy' field, so multiple runs' "
+        "eval.jsonl files can be concatenated and distinguished by commit_style.pipeline."
+        "summarize() (e.g. 'vanilla_seed1').",
+    )
     args = parser.parse_args()
 
     train_examples, _strategy_val_examples, test_examples = load_project_splits(
@@ -100,6 +133,11 @@ def main() -> None:
         f"(repo-disjoint from each other and from the {args.n_strategy_val}-sample "
         f"strategy_val set; {', '.join(sorted({e.language for e in train_examples}))})"
     )
+
+    if args.training_ids_file:
+        keep_ids = {line.strip() for line in open(args.training_ids_file) if line.strip()}
+        train_examples = [e for e in train_examples if e.id in keep_ids]
+        print(f"Filtered train_examples to {len(train_examples)} via --training-ids-file")
 
     if args.training_target == "generated":
         cached = load_training_targets_cache(train_examples, args.training_targets_cache)
@@ -136,6 +174,7 @@ def main() -> None:
             grad_accum=args.grad_accum,
             max_seq_length=args.max_seq_length,
             load_in_4bit=args.load_in_4bit,
+            seed=args.train_seed,
         )
         results = [best]
         print(f"eval_loss={best.eval_loss:.4f}")
@@ -150,6 +189,7 @@ def main() -> None:
             grad_accum=args.grad_accum,
             max_seq_length=args.max_seq_length,
             load_in_4bit=args.load_in_4bit,
+            seed=args.train_seed,
         )
         best = pick_best(results)
 
@@ -178,17 +218,33 @@ def main() -> None:
             indent=2,
         )
 
+    if args.final_eval_split == "final_eval":
+        final_eval_examples = load_final_eval_split(
+            args.data,
+            n_final_eval=args.n_final_eval,
+            seed=args.seed,
+            n_train=args.n_train,
+            n_strategy_val=args.n_strategy_val,
+            n_finetune_test=args.n_test,
+            max_diff_chars=args.max_diff_chars,
+            max_history_messages=args.max_history_messages,
+        )
+        print(f"Loaded {len(final_eval_examples)} final_eval examples for the judged comparison pass")
+    else:
+        final_eval_examples = test_examples
+
     judge_llms = build_judges(
         args.judge, args.grazie_token_file, fallback_backend="mock", fallback_model=""
     )
     gen_llm = LocalHFClient(model_name=args.model_name, adapter_path=best.adapter_path)
 
     rows = run_finetuned_eval(
-        test_examples,
+        final_eval_examples,
         gen_llm,
         judge_llms,
         gen_model_name=args.model_name,
         with_bertscore=args.with_bertscore,
+        run_label=args.run_label,
     )
     write_jsonl(rows, args.out)
     print(f"\nWrote {len(rows)} rows to {args.out}\n")

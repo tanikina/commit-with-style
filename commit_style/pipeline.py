@@ -101,4 +101,27 @@ def summarize(rows: list[dict]) -> str:
             )
         blocks.append("\n".join(lines))
 
+    usage_rows = [row for row in rows if row.get("usage")]
+    if usage_rows:
+        by_strategy: dict[str, list[dict]] = defaultdict(list)
+        for row in usage_rows:
+            by_strategy[row["strategy"]].append(row["usage"])
+
+        def _mean(usages: list[dict], key: str) -> float | None:
+            vals = [u[key] for u in usages if u.get(key) is not None]
+            return sum(vals) / len(vals) if vals else None
+
+        def _fmt(value: float | None, spec: str) -> str:
+            return format(value, spec) if value is not None else "n/a"
+
+        lines = ["--- cost ---"]
+        lines.append(f"{'strategy':<18}{'n':>4}{'in_tok':>10}{'out_tok':>10}{'latency_s':>12}")
+        for strategy_name, usages in by_strategy.items():
+            n = len(usages)
+            in_tok = _fmt(_mean(usages, "input_tokens"), ".1f")
+            out_tok = _fmt(_mean(usages, "output_tokens"), ".1f")
+            latency = _fmt(_mean(usages, "latency_s"), ".3f")
+            lines.append(f"{strategy_name:<18}{n:>4}{in_tok:>10}{out_tok:>10}{latency:>12}")
+        blocks.append("\n".join(lines))
+
     return "\n\n".join(blocks)

@@ -63,6 +63,16 @@ the same arguments from different scripts (`run_prototype.py --strategy-val` and
 `finetune_qwen.py`) deterministically yields the same non-overlapping partition without any
 shared state.
 
+A 4th, independent holdout for the multi-condition fine-tuning campaign (see
+[Multi-condition fine-tuning campaign](#multi-condition-fine-tuning-campaign) below) is drawn
+by `load_final_eval_split`. It calls `load_project_splits` first (unperturbed — the 3 sets
+above are byte-identical whether or not this function is ever called), collects the repos
+already used by `train`/`strategy_val`/`finetune_test`, and builds the new split only from the
+remaining, genuinely-unused repos — so it's disjoint from all three by construction, not just
+by the language/prefix stratification. Leftover repo availability is skewed by language, so
+per-language quotas are water-filled proportionally to each language's headroom rather than
+split evenly.
+
 ## LLM backends
 
 `commit_style/llm/` exposes one `LLMClient` interface with three implementations, selected
@@ -190,6 +200,17 @@ What it does:
    "finetuned"`) and prints the same summary table as `run_prototype.py` — concatenate it
    with a `dry_run.jsonl` from `run_prototype.py` for a side-by-side comparison.
 
+Each row also carries a `usage` field —
+`{"input_tokens": int, "output_tokens": int, "latency_s": float}` for the fine-tuned model's
+single generation call (measured directly against its own tokenizer/wall-clock, so it's exact
+rather than estimated). `summarize()` prints a `--- cost ---` block with the mean
+`in_tok`/`out_tok`/`latency_s` per `strategy` value (i.e. per `--run-label`), which is what
+you want when comparing inference cost across the 5 conditions in the
+[multi-condition campaign](#multi-condition-fine-tuning-campaign) below. `run_prototype.py`'s
+rows don't get a `usage` field (a strategy there can make several LLM calls — e.g.
+`structured` does 3 — so a single last-call snapshot wouldn't represent the strategy's total
+cost); `summarize()` simply omits the cost block when no row has `usage`.
+
 Notes:
 
 - Defaults target the **local 4GB-VRAM GPU**: `Qwen/Qwen2.5-0.5B-Instruct` (not the
@@ -309,3 +330,152 @@ but still-bounded search — e.g. 5-8 configs, or a short random/Bayesian search
 `{r, lr}` centered near that starting point — rather than a full grid, since marginal gains
 from hp tuning tend to flatten out quickly relative to just using a bigger/better base model
 or more training data.
+
+## Multi-condition fine-tuning campaign
+
+Beyond a single fine-tuning run, `scripts/finetune_qwen.py` supports a campaign that fairly
+compares 5 training conditions — **original** (human) completions vs. distilled completions
+from the **vanilla**/**structured**/**reference_guided** strategies, plus a 50/50
+**mixture** of original+structured — each trained with 3 different seeds (15 fine-tune runs)
+and judged on the same independent holdout. This is meant to run on a bigger-GPU machine
+against the real target model (e.g. `Qwen/Qwen3-4B`); this repo only needs to be cloned there
+with the dataset file alongside it.
+
+### 1. Fix the training-id set across conditions
+
+Each of the 3 distillation caches (`outputs/training_targets_gemini_{vanilla,structured,
+reference_guided}.jsonl`, produced by `scripts/generate_training_targets.py` — see
+[Generating targets standalone](#generating-targets-standalone)) may cover slightly different
+ids depending on which generations succeeded. For the comparison to be fair, all 5 conditions
+must train on the exact same fixed set of examples. `scripts/prepare_finetune_conditions.py`
+computes the intersection of ids across the `train` pool and all 3 caches, and builds the
+fixed-halves mixture cache:
+
+```bash
+.venv/bin/python scripts/prepare_finetune_conditions.py \
+  --seed 0 --n-train 1000 --n-strategy-val 200 --n-test 300 \
+  --vanilla-cache outputs/training_targets_gemini_vanilla.jsonl \
+  --structured-cache outputs/training_targets_gemini_structured.jsonl \
+  --reference-guided-cache outputs/training_targets_gemini_reference_guided.jsonl \
+  --mixture-seed 1234 \
+  --ids-out outputs/training_ids_intersection.txt \
+  --mixture-out outputs/training_targets_gemini_mixture.jsonl
+```
+
+It writes `--ids-out` (one id per line — pass this to every condition's
+`--training-ids-file`, below) and `--mixture-out` (a `write_training_targets_cache`-shaped
+JSONL: a `random.Random(--mixture-seed)` shuffle of the intersection ids split into two fixed,
+non-overlapping halves — the first half keeps its original `reference_completion`, the second
+half takes the `structured` cache's completion for that id). Run it once, after all 3 caches
+exist; it prints a report (train-pool size, per-cache id counts, intersection size, mixture
+half-sizes) to sanity-check before committing to the full campaign.
+
+### 2. `--training-ids-file`
+
+Restricts `train_examples` to a fixed external id list — applied right after
+`load_project_splits`/before any `--training-target generated` cache lookup, so every
+condition trains on exactly the ids in `outputs/training_ids_intersection.txt` and each
+generated-target cache's strict "covers every id in the current run" check trivially passes:
+
+```bash
+--training-ids-file outputs/training_ids_intersection.txt
+```
+
+The **original** condition needs no cache file at all — just `--training-target reference`
+(the default) plus this flag; the filtered `train_examples` already carry their own
+unmodified human `reference_completion`.
+
+### 3. `--train-seed`
+
+Decoupled from `--seed` (which stays fixed across the whole campaign — it only controls the
+data partition). `--train-seed` (default 42) seeds training randomness only (weight init,
+dataloader shuffling) via `transformers.set_seed` + `TrainingArguments(seed=, data_seed=)`.
+Vary it (e.g. 1/2/3) across the 3 seed-replicates per condition.
+
+### 4. `--final-eval-split final_eval` and `--run-label`
+
+`--final-eval-split {finetune_test,final_eval}` (default `finetune_test`, unchanged from a
+single run) controls only the *judged* comparison pass at the end of a run — training-time
+eval loss (`Trainer`'s `eval_dataset`, and hp-search's config selection) always uses
+`--n-test`/`finetune_test` regardless of this flag. Pass `final_eval` (plus `--n-final-eval`,
+default 200) to instead judge the winning adapter against the brand-new, independent
+`load_final_eval_split` holdout described in [Data](#data) — used for the 15 real condition
+runs, not for the one-time hp-search.
+
+`--run-label` (default `finetuned`) is written to each output row's `strategy` field, so the
+15 conditions' `eval.jsonl` files can be concatenated and stay distinguishable to
+`commit_style.pipeline.summarize()` (which groups by `strategy`) — e.g. `vanilla_seed1`,
+`mixture_seed3`.
+
+### 5. Full command sequence
+
+```bash
+# 1. hp-search once, on vanilla, intersection-restricted -> outputs/ft/hp_search/best_lora_params.json
+.venv/bin/python scripts/finetune_qwen.py \
+  --model-name Qwen/Qwen3-4B --seed 0 --n-train 1000 --n-strategy-val 200 --n-test 300 \
+  --training-ids-file outputs/training_ids_intersection.txt \
+  --training-target generated --training-target-strategy vanilla \
+  --training-targets-cache outputs/training_targets_gemini_vanilla.jsonl \
+  --train-seed 42 --final-eval-split finetune_test --run-label hp_search \
+  --output-dir outputs/ft/hp_search --out outputs/ft/hp_search/eval.jsonl \
+  --judge grazie:google-gemini-3-5-flash --grazie-token-file jwt_token.txt
+
+# 2. 15 runs = 5 conditions x 3 train-seeds, all reusing the hp-search's best_lora_params.json
+BEST=outputs/ft/hp_search/best_lora_params.json
+IDS=outputs/training_ids_intersection.txt
+for seed in 1 2 3; do
+  for cond in original vanilla structured reference_guided mixture; do
+    case $cond in
+      original)          TARGET="--training-target reference" ;;
+      vanilla)            TARGET="--training-target generated --training-target-strategy vanilla --training-targets-cache outputs/training_targets_gemini_vanilla.jsonl" ;;
+      structured)         TARGET="--training-target generated --training-target-strategy structured --training-targets-cache outputs/training_targets_gemini_structured.jsonl" ;;
+      reference_guided)   TARGET="--training-target generated --training-target-strategy reference_guided --training-targets-cache outputs/training_targets_gemini_reference_guided.jsonl" ;;
+      mixture)            TARGET="--training-target generated --training-target-strategy structured --training-targets-cache outputs/training_targets_gemini_mixture.jsonl" ;;
+    esac
+    .venv/bin/python scripts/finetune_qwen.py \
+      --model-name Qwen/Qwen3-4B --seed 0 --n-train 1000 --n-strategy-val 200 --n-test 300 \
+      --training-ids-file $IDS $TARGET \
+      --lora-params-file $BEST --train-seed $seed \
+      --final-eval-split final_eval --n-final-eval 200 \
+      --run-label ${cond}_seed${seed} \
+      --output-dir outputs/ft/${cond}/seed${seed} \
+      --out outputs/ft/${cond}/seed${seed}/eval.jsonl \
+      --judge grazie:google-gemini-3-5-flash --grazie-token-file jwt_token.txt
+  done
+done
+```
+
+`mixture`'s `--training-target-strategy structured` is only a print-log label — the actual
+completions come entirely from `--training-targets-cache
+outputs/training_targets_gemini_mixture.jsonl`, which `load_training_targets_cache` applies
+regardless of the strategy flag's value. `--seed 0` is identical everywhere (the data split
+never changes); only `--train-seed` and the training-target wiring vary. Each of the 16
+invocations writes to a distinct `outputs/ft/.../` directory and `--out` path, so nothing
+clobbers anything else.
+
+Substitute `Qwen/Qwen3-4B` with the real HF hub id available on the target machine, and add
+`--load-in-4bit` if the GPU needs it (see [Notes](#fine-tuning-lora) above — untested this
+session, install via `.venv/bin/pip install -e ".[qlora]"` first).
+
+### 6. Out-of-the-box baseline (no fine-tuning)
+
+To see what fine-tuning actually buys you, `scripts/eval_base_model.py` runs the same
+single-shot vanilla-prompt generation (`commit_style/finetune/evaluate.py`'s
+`run_finetuned_eval`, unchanged) against the **unmodified base model** — no adapter, no
+training — and judges it on the exact same `load_final_eval_split` holdout as the 15
+fine-tuned condition runs (same `--data`/`--seed`/`--n-train`/`--n-strategy-val`/`--n-test`/
+`--n-final-eval` reproduce the identical partition). Run this **once** — there's no training
+randomness to average over, so there's no `--train-seed`/seed-replicate loop here:
+
+```bash
+.venv/bin/python scripts/eval_base_model.py \
+  --model-name Qwen/Qwen3-4B --seed 0 --n-train 1000 --n-strategy-val 200 --n-test 300 \
+  --n-final-eval 200 --run-label base_qwen3_4b \
+  --out outputs/ft/base_qwen3_4b/eval.jsonl \
+  --judge grazie:google-gemini-3-5-flash --grazie-token-file jwt_token.txt
+```
+
+Output rows are shaped identically to the fine-tuned runs' (including the `usage`
+cost/latency field), so `outputs/ft/base_qwen3_4b/eval.jsonl` can be concatenated with the 15
+conditions' `eval.jsonl` files and fed straight into `commit_style.pipeline.summarize()` for a
+single side-by-side comparison table, keyed off `--run-label`/`strategy`.

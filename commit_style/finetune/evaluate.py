@@ -5,7 +5,7 @@ from commit_style.metrics import bertscore_batch, chrf_score, meteor_score
 from commit_style.strategies import Candidate, _VANILLA_SYSTEM
 
 
-def _generate(gen_llm: LLMClient, example: Example) -> Candidate:
+def _generate(gen_llm: LLMClient, example: Example, run_label: str = "finetuned") -> Candidate:
     user = (
         f"HISTORY:\n{format_history(example.history)}\n\n"
         f"DIFF:\n{example.diff}\n\n"
@@ -13,7 +13,7 @@ def _generate(gen_llm: LLMClient, example: Example) -> Candidate:
     )
     continuation = gen_llm.complete(_VANILLA_SYSTEM, user)
     return Candidate(
-        strategy="finetuned",
+        strategy=run_label,
         continuation=continuation,
         full_message=example.prefix + continuation,
     )
@@ -25,12 +25,14 @@ def run_finetuned_eval(
     judge_llms: dict[str, LLMClient],
     gen_model_name: str = "",
     with_bertscore: bool = False,
+    run_label: str = "finetuned",
 ) -> list[dict]:
     rows = []
     total = len(val_examples)
     for count, example in enumerate(val_examples, start=1):
         try:
-            candidate = _generate(gen_llm, example)
+            candidate = _generate(gen_llm, example, run_label=run_label)
+            usage = gen_llm.last_usage
             judge_scores = judge_candidates(judge_llms, example, candidate)
             metrics = {
                 "chrf": chrf_score(candidate.continuation, example.reference_completion),
@@ -54,6 +56,7 @@ def run_finetuned_eval(
                 "artifacts": candidate.artifacts,
                 "judge_scores": {jid: s.model_dump() for jid, s in judge_scores.items()},
                 "metrics": metrics,
+                "usage": usage,
                 "backend": "local_hf",
                 "model_name": gen_model_name,
             }

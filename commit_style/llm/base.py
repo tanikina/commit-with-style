@@ -63,6 +63,14 @@ def _describe_object(schema: dict, defs: dict) -> dict:
 
 
 class LLMClient(ABC):
+    """`last_usage` is set as a side effect of `complete()` — read it immediately after a
+    call (before any concurrent/overlapping call) to get that call's
+    `{input_tokens, output_tokens, latency_s}`. Any field a backend can't determine (e.g.
+    Grazie doesn't return raw token counts) is `None` rather than an estimate.
+    """
+
+    last_usage: dict[str, float | None] | None = None
+
     @abstractmethod
     def complete(self, system: str, user: str, max_tokens: int = 600) -> str:
         ...
