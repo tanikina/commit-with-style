@@ -21,12 +21,17 @@ def generate_training_targets(
     """
     strategy_fn = STRATEGIES[strategy_name]
     generated = []
-    for example in examples:
+    total = len(examples)
+    for count, example in enumerate(examples, start=1):
         try:
             candidate = strategy_fn(gen_llm, example)
         except Exception as e:
-            print(f"[generate_training_targets] skipping example={example.id} after a persistent error: {e}")
+            print(
+                f"[generate_training_targets] ({count}/{total}) skipping example={example.id} "
+                f"after a persistent error: {e}"
+            )
             continue
+        print(f"[generate_training_targets] ({count}/{total}) generated example={example.id}")
         generated.append(replace(example, reference_completion=candidate.continuation))
     return generated
 

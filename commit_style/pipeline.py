@@ -19,8 +19,11 @@ def run_pipeline(
     with_bertscore: bool = False,
 ) -> list[dict]:
     rows = []
+    total = len(examples) * len(strategies)
+    count = 0
     for example in examples:
         for strategy_name in strategies:
+            count += 1
             try:
                 strategy_fn = STRATEGIES[strategy_name]
                 candidate = strategy_fn(gen_llm, example)
@@ -31,10 +34,11 @@ def run_pipeline(
                 }
             except Exception as e:
                 print(
-                    f"[run_pipeline] skipping example={example.id} strategy={strategy_name} "
-                    f"after a persistent error: {e}"
+                    f"[run_pipeline] ({count}/{total}) skipping example={example.id} "
+                    f"strategy={strategy_name} after a persistent error: {e}"
                 )
                 continue
+            print(f"[run_pipeline] ({count}/{total}) generated example={example.id} strategy={strategy_name}")
             rows.append(
                 {
                     "example_id": example.id,

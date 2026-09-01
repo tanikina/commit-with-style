@@ -27,7 +27,8 @@ def run_finetuned_eval(
     with_bertscore: bool = False,
 ) -> list[dict]:
     rows = []
-    for example in val_examples:
+    total = len(val_examples)
+    for count, example in enumerate(val_examples, start=1):
         try:
             candidate = _generate(gen_llm, example)
             judge_scores = judge_candidates(judge_llms, example, candidate)
@@ -36,8 +37,9 @@ def run_finetuned_eval(
                 "meteor": meteor_score(candidate.continuation, example.reference_completion),
             }
         except Exception as e:
-            print(f"[run_finetuned_eval] skipping example={example.id} after a persistent error: {e}")
+            print(f"[run_finetuned_eval] ({count}/{total}) skipping example={example.id} after a persistent error: {e}")
             continue
+        print(f"[run_finetuned_eval] ({count}/{total}) generated example={example.id}")
         rows.append(
             {
                 "example_id": example.id,
