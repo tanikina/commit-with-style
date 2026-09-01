@@ -37,7 +37,7 @@ def main() -> None:
     parser.add_argument("--max-diff-chars", type=int, default=4000)
     parser.add_argument("--max-history-messages", type=int, default=5)
     parser.add_argument("--strategy", choices=list(STRATEGIES.keys()), default="structured")
-    parser.add_argument("--backend", choices=["mock", "grazie", "local_hf"], default="grazie")
+    parser.add_argument("--backend", choices=["mock", "grazie", "local_hf", "vllm"], default="grazie")
     parser.add_argument("--model", default="google-gemini-3-5-flash")
     parser.add_argument("--grazie-token-file", default=None)
     parser.add_argument("--out", default="outputs/training_targets_cache.jsonl")

@@ -1,7 +1,10 @@
 import argparse
+import gc
 import json
 import sys
 from pathlib import Path
+
+import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -15,7 +18,6 @@ from commit_style.finetune.synth_targets import (
 )
 from commit_style.finetune.train import load_lora_params, train_one_config, write_lora_params
 from commit_style.llm.factory import build_judges, build_llm
-from commit_style.llm.local_hf import LocalHFClient
 from commit_style.pipeline import summarize, write_jsonl
 from commit_style.strategies import STRATEGIES
 
@@ -72,8 +74,15 @@ def main() -> None:
         default="structured",
         help="Strategy used to generate training targets when --training-target generated.",
     )
-    parser.add_argument("--training-target-backend", choices=["mock", "grazie", "local_hf"], default="grazie")
-    parser.add_argument("--training-target-model", default="google-gemini-3-5-flash")
+    parser.add_argument(
+        "--training-target-backend", choices=["mock", "grazie", "local_hf", "vllm"], default="vllm"
+    )
+    parser.add_argument(
+        "--training-target-model", default="",
+        help="Defaults to the tiny local stand-in model for vllm/local_hf backends. Pass "
+        "e.g. --training-target-model google-gemini-3-5-flash with --training-target-backend "
+        "grazie, or a real hub id like Qwen/Qwen3.5-9B with --training-target-backend vllm.",
+    )
     parser.add_argument(
         "--training-targets-cache",
         default="outputs/training_targets_cache.jsonl",
@@ -92,6 +101,11 @@ def main() -> None:
         "on which strategy generated the training targets.",
     )
     parser.add_argument("--output-dir", default="outputs/finetune")
+    parser.add_argument(
+        "--gen-backend", choices=["mock", "grazie", "local_hf", "vllm"], default="vllm",
+        help="Backend for the final judged-eval pass only (training always uses "
+        "transformers+peft, unaffected by this flag). Defaults to vllm for fast generation.",
+    )
     parser.add_argument(
         "--judge", action="append", metavar="BACKEND:MODEL",
         help="Repeatable, e.g. --judge grazie:openai-gpt-5 --judge grazie:anthropic-claude-sonnet-5. "
@@ -158,6 +172,8 @@ def main() -> None:
             )
             write_training_targets_cache(train_examples, args.training_targets_cache)
             print(f"Wrote generated training targets to {args.training_targets_cache}")
+            del target_llm
+            gc.collect()
 
     if args.lora_params_file:
         lora_params = load_lora_params(args.lora_params_file)
@@ -218,6 +234,9 @@ def main() -> None:
             indent=2,
         )
 
+    gc.collect()
+    torch.cuda.empty_cache()
+
     if args.final_eval_split == "final_eval":
         final_eval_examples = load_final_eval_split(
             args.data,
@@ -236,13 +255,16 @@ def main() -> None:
     judge_llms = build_judges(
         args.judge, args.grazie_token_file, fallback_backend="mock", fallback_model=""
     )
-    gen_llm = LocalHFClient(model_name=args.model_name, adapter_path=best.adapter_path)
+    gen_llm = build_llm(
+        args.gen_backend, args.model_name, args.grazie_token_file, adapter_path=best.adapter_path
+    )
 
     rows = run_finetuned_eval(
         final_eval_examples,
         gen_llm,
         judge_llms,
         gen_model_name=args.model_name,
+        gen_backend_name=args.gen_backend,
         with_bertscore=args.with_bertscore,
         run_label=args.run_label,
     )

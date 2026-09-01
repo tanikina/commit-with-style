@@ -32,6 +32,13 @@ def build_llm(
             model_name=model_name or "Qwen/Qwen2.5-0.5B-Instruct",
             adapter_path=adapter_path,
         )
+    if backend == "vllm":
+        from commit_style.llm.vllm_client import VLLMClient
+
+        return VLLMClient(
+            model_name=model_name or "Qwen/Qwen2.5-0.5B-Instruct",
+            adapter_path=adapter_path,
+        )
     raise ValueError(f"Unknown backend: {backend}")
 
 

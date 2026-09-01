@@ -24,6 +24,7 @@ def run_finetuned_eval(
     gen_llm: LLMClient,
     judge_llms: dict[str, LLMClient],
     gen_model_name: str = "",
+    gen_backend_name: str = "local_hf",
     with_bertscore: bool = False,
     run_label: str = "finetuned",
 ) -> list[dict]:
@@ -57,7 +58,7 @@ def run_finetuned_eval(
                 "judge_scores": {jid: s.model_dump() for jid, s in judge_scores.items()},
                 "metrics": metrics,
                 "usage": usage,
-                "backend": "local_hf",
+                "backend": gen_backend_name,
                 "model_name": gen_model_name,
             }
         )

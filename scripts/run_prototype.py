@@ -26,7 +26,11 @@ def main() -> None:
         nargs="+",
         default=["vanilla", "structured", "reference_guided"],
     )
-    parser.add_argument("--backend", choices=["mock", "grazie", "local_hf"], default="mock")
+    parser.add_argument(
+        "--backend", choices=["mock", "grazie", "local_hf", "vllm"], default="vllm",
+        help="Defaults to vllm for fast local generation; pass --backend mock for a "
+        "zero-dependency, no-GPU dry run.",
+    )
     parser.add_argument("--model", default="")
     parser.add_argument(
         "--judge", action="append", metavar="BACKEND:MODEL",
