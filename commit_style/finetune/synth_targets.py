@@ -1,10 +1,40 @@
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
 
 from commit_style.data import Example
 from commit_style.llm.base import LLMClient
 from commit_style.strategies import STRATEGIES
+
+_LEAK_CUE_RE = re.compile(
+    r"\bwait,|\blet me\b|\blet's\b|\bhmm\b|\bactually,|\bor maybe\b|\bthe prefix is\b|"
+    r"\bthe diff (?:only )?shows?\b|\bis it \"|\bso the continuation\b|\bso the commit message\b|"
+    r"\bmaybe this is\b|\bmaybe the continuation\b|\bno, \"|\bi think the\b|"
+    r"\bmatches the original message\b|\bthe original message (?:has|had)\b|"
+    r"\bit could be completed as\b|\ban elegant and clear way\b|\banswering the user's request\b|"
+    r"\bthe continuation (?:of the commit message )?should be\b",
+    re.IGNORECASE,
+)
+_ARROW_ANSWER_RE = re.compile(r'"[^"\n]*"\s*(?:->|→)\s*"([^"\n]+)"\s*$')
+
+
+def clean_reasoning_leakage(text: str) -> str | None:
+    """Detect self-questioning/reasoning leakage in a generated completion (e.g. `"Wait, the
+    diff only shows..."`) via a cue-phrase match. A no-op (returns `text` unchanged) when no
+    cue matches. When a cue matches, attempts one narrow, high-confidence extraction — a
+    terminal `"X" -> "Y"` arrow construct where `Y` is a complete, closed quote at the very
+    end of the text — and returns just `Y`. Returns `None` when a cue matches but nothing can
+    be safely extracted (most cases: the text is truncated mid-thought or lists multiple
+    unresolved candidate phrasings) — the caller is expected to fall back to a known-good
+    value (e.g. the example's human `reference_completion`) rather than use `None` as data.
+    This cue list is precision-favoring, not exhaustive — some contamination without any of
+    these exact phrases will slip through undetected.
+    """
+    if not _LEAK_CUE_RE.search(text):
+        return text
+    m = _ARROW_ANSWER_RE.search(text.strip())
+    return m.group(1).strip() if m else None
 
 
 def generate_training_targets(
@@ -18,6 +48,11 @@ def generate_training_targets(
     `reference_completion` changes — `reference_full_message` and everything else on the
     `Example` is left untouched (metrics/judging elsewhere still compare against the human
     reference).
+
+    Generated completions are passed through `clean_reasoning_leakage()` first: cleanly
+    extractable leakage is fixed in place; unsalvageable leakage falls back to the example's
+    original human `reference_completion` rather than keeping the contaminated text or
+    dropping the row (dropping would break cache id-coverage guarantees relied on elsewhere).
     """
     strategy_fn = STRATEGIES[strategy_name]
     generated = []
@@ -34,7 +69,16 @@ def generate_training_targets(
         print(f"[generate_training_targets] ({count}/{total}) generated example={example.id}")
         if debug:
             print(f"[debug] example={example.id} continuation={candidate.continuation!r}")
-        generated.append(replace(example, reference_completion=candidate.continuation))
+        cleaned = clean_reasoning_leakage(candidate.continuation)
+        if cleaned is None:
+            print(
+                f"[generate_training_targets] example={example.id}: reasoning leakage detected, "
+                f"no clean answer extractable — falling back to the human reference_completion"
+            )
+            cleaned = example.reference_completion
+        elif cleaned != candidate.continuation:
+            print(f"[generate_training_targets] example={example.id}: extracted clean answer from reasoning leakage")
+        generated.append(replace(example, reference_completion=cleaned))
     return generated
 
 

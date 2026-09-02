@@ -84,6 +84,9 @@ via `--backend`:
   Much faster than `local_hf` for anything beyond a tiny model. Install with
   `pip install -e .[vllm]` (GPU required). **This changes the previous zero-dependency
   default** — pass `--backend mock` explicitly for a no-GPU, no-model dry run.
+  If vLLM's engine fails to start with a `flashinfer`/`nvcc`/`CUDA_HOME` error (no CUDA
+  toolkit installed, only the driver), set `VLLM_USE_FLASHINFER_SAMPLER=0` to fall back to
+  vLLM's non-flashinfer sampler — confirmed to work around this on this project's dev GPU.
 - `mock` — deterministic, no network/model, used to validate pipeline wiring.
 - `grazie` — JetBrains' internal Grazie API gateway, e.g. `google-gemini-3-5-flash`. Requires
   a JWT token (see below).
@@ -344,6 +347,34 @@ It takes the same `--data`/`--n-train`/`--n-strategy-val`/`--n-test`/`--seed` ar
 immediately without spending any API calls. Point `finetune_qwen.py --training-target
 generated --training-targets-cache outputs/training_targets_structured.jsonl` at the result
 to train on it.
+
+#### Reasoning-leakage cleanup
+
+Some generator LLMs (observed with Grazie/Gemini backends) occasionally emit a short
+self-questioning fragment instead of a clean completion, e.g. `"Wait, the diff only
+shows..."` or `"path nam" -> "path name and report name in Dangerfile"`, with no `<think>`
+tag to strip (unlike the hybrid-reasoning-model case described under
+[LLM backends](#llm-backends) above).
+`generate_training_targets()` (`commit_style/finetune/synth_targets.py`) now runs every
+generated completion through `clean_reasoning_leakage()` before caching it: text with no
+leakage cue passes through unchanged; a narrow, high-confidence case (a terminal `"X" ->
+"Y"` arrow/quote construct) is cleanly extracted; anything else that matches a leakage cue
+falls back to the example's original human `reference_completion` rather than keeping
+contaminated text or dropping the row (dropping would break the id-coverage guarantee
+`--training-ids-file` relies on below). This is a plain-text heuristic — no extra LLM
+round — and its cue-phrase list favors precision over recall, so a small amount of
+unflagged contamination may still slip through.
+
+Already-generated caches aren't touched retroactively by this — clean them once with:
+
+```bash
+.venv/bin/python scripts/clean_training_targets_cache.py --cache outputs/training_targets_gemini_vanilla.jsonl
+```
+
+which writes a non-destructive `outputs/training_targets_gemini_vanilla.cleaned.jsonl` by
+default (pass `--in-place` to overwrite the original after reviewing the printed
+contaminated/extracted/fallback counts) using `--data`'s original human completions as the
+fallback source, so the cleaned cache's id set and row count are identical to the original.
 
 ### Notes on the hyperparameter search
 
