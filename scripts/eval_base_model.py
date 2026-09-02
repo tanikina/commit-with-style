@@ -45,6 +45,10 @@ def main() -> None:
         "distinguishable from the 15 fine-tuned conditions when eval.jsonl files are "
         "concatenated and summarized together.",
     )
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="Print each candidate's continuation as it's generated.",
+    )
     args = parser.parse_args()
 
     final_eval_examples = load_final_eval_split(
@@ -70,6 +74,7 @@ def main() -> None:
         gen_backend_name=args.backend,
         with_bertscore=args.with_bertscore,
         run_label=args.run_label,
+        debug=args.debug,
     )
     write_jsonl(rows, args.out)
     print(f"\nWrote {len(rows)} rows to {args.out}\n")

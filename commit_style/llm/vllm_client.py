@@ -7,7 +7,7 @@ replaces the transformers.Trainer + peft LoRA training loop in commit_style/fine
 
 import time
 
-from commit_style.llm.base import LLMClient
+from commit_style.llm.base import LLMClient, strip_thinking
 
 
 class VLLMClient(LLMClient):
@@ -44,6 +44,11 @@ class VLLMClient(LLMClient):
             [[{"role": "system", "content": system}, {"role": "user", "content": user}]],
             SamplingParams(max_tokens=max_tokens, temperature=0.2),
             lora_request=self._lora_request,
+            # Qwen3(.5)-family hybrid-reasoning models insert a chain-of-thought preamble
+            # by default, which can consume the entire max_tokens budget before any answer
+            # is produced (see README). Unrecognized chat-template kwargs are silently
+            # ignored by HF's renderer, so this is safe to pass unconditionally.
+            chat_template_kwargs={"enable_thinking": False},
         )
         latency_s = time.time() - start
 
@@ -52,4 +57,4 @@ class VLLMClient(LLMClient):
             "output_tokens": len(output.outputs[0].token_ids),
             "latency_s": latency_s,
         }
-        return output.outputs[0].text
+        return strip_thinking(output.outputs[0].text)

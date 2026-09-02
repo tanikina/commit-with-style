@@ -104,6 +104,18 @@ PyTorch even after `train_one_config` returns. `finetune_qwen.py` handles both h
 already (dropping the target-generation client right after caching its output, and calling
 `torch.cuda.empty_cache()` right after training completes) — no extra flags needed.
 
+Qwen3(.5)-family models are hybrid-reasoning models: by default they emit a chain-of-thought
+"thinking" preamble before an answer, which can consume the entire `max_tokens` budget with
+no answer ever produced (observed on real `Qwen3.5-4B` runs — the model's own default
+behavior overrides even an explicit "no explanation" system prompt). `vllm` and `local_hf`
+both pass `enable_thinking=False` through the chat template to suppress this at generation
+time; `strip_thinking()` (`commit_style/llm/base.py`) additionally strips a stray
+`<think>...</think>` block from any backend's output as a defensive second layer, though it
+can't recover an answer that was never generated. Pass `--debug` to `run_prototype.py`,
+`finetune_qwen.py`, `eval_base_model.py`, or `generate_training_targets.py` to print every
+candidate's raw continuation as it's generated, useful for catching this (or similar
+generation issues) live instead of only after the run finishes.
+
 Structured output (`ChangePlan`, `VerificationResult`, `JudgeScores`) is enforced the same
 way across all backends: instruct the model to emit JSON matching the pydantic schema, parse
 it (tolerating surrounding commentary), validate, and retry once on failure.

@@ -131,6 +131,11 @@ def main() -> None:
         "eval.jsonl files can be concatenated and distinguished by commit_style.pipeline."
         "summarize() (e.g. 'vanilla_seed1').",
     )
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="Print each candidate's continuation as it's generated (training-target "
+        "generation and the final judged-eval pass).",
+    )
     args = parser.parse_args()
 
     train_examples, _strategy_val_examples, test_examples = load_project_splits(
@@ -168,7 +173,7 @@ def main() -> None:
                 args.training_target_backend, args.training_target_model, args.grazie_token_file
             )
             train_examples = generate_training_targets(
-                train_examples, args.training_target_strategy, target_llm
+                train_examples, args.training_target_strategy, target_llm, debug=args.debug
             )
             write_training_targets_cache(train_examples, args.training_targets_cache)
             print(f"Wrote generated training targets to {args.training_targets_cache}")
@@ -267,6 +272,7 @@ def main() -> None:
         gen_backend_name=args.gen_backend,
         with_bertscore=args.with_bertscore,
         run_label=args.run_label,
+        debug=args.debug,
     )
     write_jsonl(rows, args.out)
     print(f"\nWrote {len(rows)} rows to {args.out}\n")

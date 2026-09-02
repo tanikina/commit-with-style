@@ -40,6 +40,10 @@ def main() -> None:
     parser.add_argument("--grazie-token-file", default=None)
     parser.add_argument("--out", default="outputs/dry_run.jsonl")
     parser.add_argument("--with-bertscore", action="store_true")
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="Print each candidate's continuation as it's generated.",
+    )
     args = parser.parse_args()
 
     if args.strategy_val:
@@ -62,6 +66,7 @@ def main() -> None:
         gen_backend_name=args.backend,
         gen_model_name=args.model,
         with_bertscore=args.with_bertscore,
+        debug=args.debug,
     )
     write_jsonl(rows, args.out)
     print(f"Wrote {len(rows)} rows to {args.out}\n")

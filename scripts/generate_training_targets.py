@@ -41,6 +41,10 @@ def main() -> None:
     parser.add_argument("--model", default="google-gemini-3-5-flash")
     parser.add_argument("--grazie-token-file", default=None)
     parser.add_argument("--out", default="outputs/training_targets_cache.jsonl")
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="Print each candidate's continuation as it's generated.",
+    )
     args = parser.parse_args()
 
     train_examples, _strategy_val, _test = load_project_splits(
@@ -64,7 +68,7 @@ def main() -> None:
         f"backend={args.backend} model={args.model}..."
     )
     llm = build_llm(args.backend, args.model, args.grazie_token_file)
-    generated = generate_training_targets(train_examples, args.strategy, llm)
+    generated = generate_training_targets(train_examples, args.strategy, llm, debug=args.debug)
     write_training_targets_cache(generated, args.out)
     print(f"Wrote {len(generated)} generated training targets to {args.out}")
 

@@ -17,6 +17,7 @@ def run_pipeline(
     gen_backend_name: str = "",
     gen_model_name: str = "",
     with_bertscore: bool = False,
+    debug: bool = False,
 ) -> list[dict]:
     rows = []
     total = len(examples) * len(strategies)
@@ -39,6 +40,8 @@ def run_pipeline(
                 )
                 continue
             print(f"[run_pipeline] ({count}/{total}) generated example={example.id} strategy={strategy_name}")
+            if debug:
+                print(f"[debug] example={example.id} strategy={strategy_name} continuation={candidate.continuation!r}")
             rows.append(
                 {
                     "example_id": example.id,

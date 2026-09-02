@@ -12,7 +12,7 @@ from grazie.api.client.llm_parameters import LLMParameters
 from grazie.api.client.parameters import Parameters
 from grazie.api.client.profiles import LLMProfile, Profile
 
-from commit_style.llm.base import LLMClient
+from commit_style.llm.base import LLMClient, strip_thinking
 
 
 class GrazieLLMClient(LLMClient):
@@ -71,7 +71,7 @@ class GrazieLLMClient(LLMClient):
                     "output_tokens": None,
                     "latency_s": time.time() - start,
                 }
-                return response.content
+                return strip_thinking(response.content)
             except RequestFailedException as e:
                 message = str(e).lower()
                 # Some models (e.g. gpt-5, a reasoning model) reject sampling params like

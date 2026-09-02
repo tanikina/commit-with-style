@@ -27,6 +27,7 @@ def run_finetuned_eval(
     gen_backend_name: str = "local_hf",
     with_bertscore: bool = False,
     run_label: str = "finetuned",
+    debug: bool = False,
 ) -> list[dict]:
     rows = []
     total = len(val_examples)
@@ -43,6 +44,8 @@ def run_finetuned_eval(
             print(f"[run_finetuned_eval] ({count}/{total}) skipping example={example.id} after a persistent error: {e}")
             continue
         print(f"[run_finetuned_eval] ({count}/{total}) generated example={example.id}")
+        if debug:
+            print(f"[debug] example={example.id} continuation={candidate.continuation!r}")
         rows.append(
             {
                 "example_id": example.id,

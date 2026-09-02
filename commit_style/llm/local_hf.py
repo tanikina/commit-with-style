@@ -6,7 +6,7 @@ Also doubles as the backend for a LoRA-fine-tuned adapter (`adapter_path`), see
 
 import time
 
-from commit_style.llm.base import LLMClient
+from commit_style.llm.base import LLMClient, strip_thinking
 
 
 class LocalHFClient(LLMClient):
@@ -38,16 +38,22 @@ class LocalHFClient(LLMClient):
             {"role": "user", "content": user},
         ]
         tokenizer = self._pipe.tokenizer
-        prompt_text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        # enable_thinking=False suppresses Qwen3(.5)-family hybrid reasoning models' default
+        # chain-of-thought preamble, which can otherwise consume the entire max_tokens budget
+        # before any answer is produced (see README). Passing the rendered prompt text
+        # (rather than `messages`) to the pipeline is what lets us control this kwarg —
+        # transformers.pipeline re-applies the chat template internally with no passthrough
+        # for it when given raw messages.
+        prompt_text = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+        )
         input_tokens = len(tokenizer(prompt_text, add_special_tokens=False)["input_ids"])
 
         start = time.time()
-        output = self._pipe(messages, max_new_tokens=max_tokens, do_sample=False)
+        output = self._pipe(prompt_text, max_new_tokens=max_tokens, do_sample=False, return_full_text=False)
         latency_s = time.time() - start
 
-        generated = output[0]["generated_text"]
-        last_message = generated[-1]
-        content = last_message["content"] if isinstance(last_message, dict) else str(last_message)
+        content = strip_thinking(output[0]["generated_text"])
         output_tokens = len(tokenizer(content, add_special_tokens=False)["input_ids"])
         self.last_usage = {
             "input_tokens": input_tokens,

@@ -5,10 +5,26 @@ from abc import ABC, abstractmethod
 from pydantic import BaseModel, ValidationError
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+_THINK_CLOSED_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+_THINK_UNCLOSED_RE = re.compile(r"<think>.*", re.DOTALL)
 
 
 def _strip_fences(text: str) -> str:
     return _FENCE_RE.sub("", text).strip()
+
+
+def strip_thinking(text: str) -> str:
+    """Remove a `<think>...</think>` reasoning block some models emit despite being asked
+    not to. If `<think>` opens but never closes (the whole max_tokens budget was consumed by
+    reasoning), everything from `<think>` onward is dropped rather than kept, since nothing
+    after an incomplete thought is trustworthy. A no-op on text with no `<think>` tag —
+    suppressing the reasoning at generation time (e.g. `enable_thinking=False`) is the real
+    fix; this is just a defensive second layer.
+    """
+    stripped = _THINK_CLOSED_RE.sub("", text)
+    if stripped == text:
+        stripped = _THINK_UNCLOSED_RE.sub("", text)
+    return stripped.strip()
 
 
 def _extract_json_object(text: str) -> str:

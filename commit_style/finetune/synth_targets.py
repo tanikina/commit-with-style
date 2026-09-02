@@ -8,7 +8,7 @@ from commit_style.strategies import STRATEGIES
 
 
 def generate_training_targets(
-    examples: list[Example], strategy_name: str, gen_llm: LLMClient
+    examples: list[Example], strategy_name: str, gen_llm: LLMClient, debug: bool = False
 ) -> list[Example]:
     """Replace each example's `reference_completion` with a strategy-generated one.
 
@@ -32,6 +32,8 @@ def generate_training_targets(
             )
             continue
         print(f"[generate_training_targets] ({count}/{total}) generated example={example.id}")
+        if debug:
+            print(f"[debug] example={example.id} continuation={candidate.continuation!r}")
         generated.append(replace(example, reference_completion=candidate.continuation))
     return generated
 
