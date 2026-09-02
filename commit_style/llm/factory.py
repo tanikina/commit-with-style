@@ -17,6 +17,7 @@ def build_llm(
     model_name: str,
     grazie_token_file: str | None,
     adapter_path: str | None = None,
+    quantization: str | None = None,
 ) -> LLMClient:
     if backend == "mock":
         return MockLLMClient()
@@ -38,6 +39,7 @@ def build_llm(
         return VLLMClient(
             model_name=model_name or "Qwen/Qwen2.5-0.5B-Instruct",
             adapter_path=adapter_path,
+            quantization=quantization,
         )
     raise ValueError(f"Unknown backend: {backend}")
 

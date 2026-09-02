@@ -91,6 +91,13 @@ def main() -> None:
         "current --n-train set; regenerated (and overwritten) otherwise.",
     )
     parser.add_argument(
+        "--training-target-quantization",
+        default=None,
+        help="Passed through to --training-target-backend vllm, e.g. 'bitsandbytes' for "
+        "on-the-fly 4-bit loading — use this when the model's full-precision weights don't "
+        "fit the GPU (see README). Ignored by other backends.",
+    )
+    parser.add_argument(
         "--lora-params-file",
         default=None,
         help="Skip the 3-config hp-search grid and train once with LoRA params loaded from "
@@ -105,6 +112,13 @@ def main() -> None:
         "--gen-backend", choices=["mock", "grazie", "local_hf", "vllm"], default="vllm",
         help="Backend for the final judged-eval pass only (training always uses "
         "transformers+peft, unaffected by this flag). Defaults to vllm for fast generation.",
+    )
+    parser.add_argument(
+        "--gen-quantization",
+        default=None,
+        help="Passed through to --gen-backend vllm, e.g. 'bitsandbytes' for on-the-fly 4-bit "
+        "loading — use this when the model's full-precision weights don't fit the GPU (see "
+        "README). Ignored by other backends.",
     )
     parser.add_argument(
         "--judge", action="append", metavar="BACKEND:MODEL",
@@ -170,7 +184,10 @@ def main() -> None:
                 f"model={args.training_target_model} (no usable cache found)..."
             )
             target_llm = build_llm(
-                args.training_target_backend, args.training_target_model, args.grazie_token_file
+                args.training_target_backend,
+                args.training_target_model,
+                args.grazie_token_file,
+                quantization=args.training_target_quantization,
             )
             train_examples = generate_training_targets(
                 train_examples, args.training_target_strategy, target_llm, debug=args.debug
@@ -261,7 +278,11 @@ def main() -> None:
         args.judge, args.grazie_token_file, fallback_backend="mock", fallback_model=""
     )
     gen_llm = build_llm(
-        args.gen_backend, args.model_name, args.grazie_token_file, adapter_path=best.adapter_path
+        args.gen_backend,
+        args.model_name,
+        args.grazie_token_file,
+        adapter_path=best.adapter_path,
+        quantization=args.gen_quantization,
     )
 
     rows = run_finetuned_eval(

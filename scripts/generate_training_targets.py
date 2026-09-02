@@ -40,6 +40,13 @@ def main() -> None:
     parser.add_argument("--backend", choices=["mock", "grazie", "local_hf", "vllm"], default="grazie")
     parser.add_argument("--model", default="google-gemini-3-5-flash")
     parser.add_argument("--grazie-token-file", default=None)
+    parser.add_argument(
+        "--quantization",
+        default=None,
+        help="Passed through to the vllm backend, e.g. 'bitsandbytes' for on-the-fly 4-bit "
+        "loading — use this when the model's full-precision weights don't fit the GPU (see "
+        "README). Ignored by other backends.",
+    )
     parser.add_argument("--out", default="outputs/training_targets_cache.jsonl")
     parser.add_argument(
         "--debug", action="store_true",
@@ -67,7 +74,7 @@ def main() -> None:
         f"Generating {len(train_examples)} training targets via strategy={args.strategy} "
         f"backend={args.backend} model={args.model}..."
     )
-    llm = build_llm(args.backend, args.model, args.grazie_token_file)
+    llm = build_llm(args.backend, args.model, args.grazie_token_file, quantization=args.quantization)
     generated = generate_training_targets(train_examples, args.strategy, llm, debug=args.debug)
     write_training_targets_cache(generated, args.out)
     print(f"Wrote {len(generated)} generated training targets to {args.out}")

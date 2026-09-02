@@ -19,7 +19,8 @@ dependencies = [
 
 [project.optional-dependencies]
 grazie = ["grazie_api_gateway_client>=0.3.3"]
-qlora = ["bitsandbytes>=0.43"]  # only needed for --load-in-4bit, untested on the local 4GB GPU
+qlora = ["bitsandbytes>=0.43"]  # needed for --load-in-4bit (training) and --quantization
+                                 # bitsandbytes (vllm inference) alike; untested on the local 4GB GPU
 vllm = ["vllm"]  # GPU-only; pins its own exact torch version, verified compatible with the
                  # torch>=2.13,<2.14 pin above at install time (vllm==0.28.0 -> torch==2.13.0)
 

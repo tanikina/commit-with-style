@@ -123,6 +123,27 @@ Structured output (`ChangePlan`, `VerificationResult`, `JudgeScores`) is enforce
 way across all backends: instruct the model to emit JSON matching the pydantic schema, parse
 it (tolerating surrounding commentary), validate, and retry once on failure.
 
+### Quantization (vllm backend)
+
+`--quantization bitsandbytes` (`run_prototype.py`, `eval_base_model.py`,
+`generate_training_targets.py`; `--training-target-quantization`/`--gen-quantization` for
+`finetune_qwen.py`'s two separate `vllm` call sites) loads the model in 4-bit NF4 via vLLM's
+built-in on-the-fly bitsandbytes support instead of full bf16 — needs `pip install
+bitsandbytes` (the `qlora` extra already covers this). Use it when the model's full-precision
+weights don't fit the GPU at all, which shows up as a `torch.OutOfMemoryError` *while the
+model is loading* (a large chunk of GPU memory already allocated, a small further allocation
+failing) rather than during generation — raising `gpu_memory_utilization` can't fix that case,
+since it only budgets memory *after* the weights are already resident. Rough sizing: a 9B
+model needs ~18GB in bf16 but only ~5-6GB in 4-bit, so e.g. `Qwen/Qwen3.5-9B` that OOMs on a
+22GB GPU in bf16 should fit comfortably in 4-bit with room left for KV cache. Untested this
+session (no GPU here large enough to need it); also unverified whether vLLM's LoRA adapter
+loading (`--gen-quantization` combined with a fine-tuned `adapter_path`) works together with
+bitsandbytes quantization in the pinned vLLM version. `local_hf` has no equivalent
+inference-time quantization option today (its `--load-in-4bit`-style `BitsAndBytesConfig`
+path only exists on the training side, `commit_style/finetune/train.py`) — if
+`--gen-quantization` errors out together with an adapter, that gap would need closing before
+`local_hf` could serve as a fallback.
+
 ### Grazie token
 
 The Grazie client needs a JWT token. Either:

@@ -36,6 +36,13 @@ def main() -> None:
         help="Repeatable, e.g. --judge grazie:openai-gpt-5. If omitted, judges with mock.",
     )
     parser.add_argument("--grazie-token-file", default=None)
+    parser.add_argument(
+        "--quantization",
+        default=None,
+        help="Passed through to the vllm backend, e.g. 'bitsandbytes' for on-the-fly 4-bit "
+        "loading — use this when the model's full-precision weights don't fit the GPU (see "
+        "README). Ignored by other backends.",
+    )
     parser.add_argument("--with-bertscore", action="store_true")
     parser.add_argument("--out", default="outputs/base_model_eval.jsonl")
     parser.add_argument(
@@ -64,7 +71,7 @@ def main() -> None:
     print(f"Loaded {len(final_eval_examples)} final_eval examples")
 
     judge_llms = build_judges(args.judge, args.grazie_token_file, fallback_backend="mock", fallback_model="")
-    gen_llm = build_llm(args.backend, args.model_name, args.grazie_token_file)
+    gen_llm = build_llm(args.backend, args.model_name, args.grazie_token_file, quantization=args.quantization)
 
     rows = run_finetuned_eval(
         final_eval_examples,

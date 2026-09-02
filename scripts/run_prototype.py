@@ -33,6 +33,13 @@ def main() -> None:
     )
     parser.add_argument("--model", default="")
     parser.add_argument(
+        "--quantization",
+        default=None,
+        help="Passed through to the vllm backend, e.g. 'bitsandbytes' for on-the-fly 4-bit "
+        "loading — use this when the model's full-precision weights don't fit the GPU (see "
+        "README). Ignored by other backends.",
+    )
+    parser.add_argument(
         "--judge", action="append", metavar="BACKEND:MODEL",
         help="Repeatable, e.g. --judge grazie:openai-gpt-5 --judge grazie:anthropic-claude-sonnet-5. "
         "If omitted, judges with the generation backend/model.",
@@ -53,7 +60,7 @@ def main() -> None:
     print(f"Loaded {len(examples)} examples "
           f"({', '.join(sorted({e.language for e in examples}))})")
 
-    gen_llm = build_llm(args.backend, args.model, args.grazie_token_file)
+    gen_llm = build_llm(args.backend, args.model, args.grazie_token_file, quantization=args.quantization)
     judge_llms = build_judges(
         args.judge, args.grazie_token_file, fallback_backend=args.backend, fallback_model=args.model
     )

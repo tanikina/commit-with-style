@@ -18,11 +18,12 @@ class VLLMClient(LLMClient):
         gpu_memory_utilization: float = 0.6,
         max_model_len: int = 4096,
         max_lora_rank: int = 32,
+        quantization: str | None = None,
     ):
         from vllm import LLM
 
         self._model_name = model_name
-        self._llm = LLM(
+        llm_kwargs = dict(
             model=model_name,
             dtype="bfloat16",
             gpu_memory_utilization=gpu_memory_utilization,
@@ -30,6 +31,17 @@ class VLLMClient(LLMClient):
             enable_lora=adapter_path is not None,
             max_lora_rank=max_lora_rank,
         )
+        if quantization:
+            # On-the-fly quantization of a full-precision checkpoint (e.g. "bitsandbytes"
+            # 4-bit NF4) shrinks weight memory ~4x, which is what actually matters for OOMs
+            # during weight loading — gpu_memory_utilization only budgets memory *after* the
+            # weights are already resident, so it can't fix a checkpoint that doesn't fit at
+            # all. bitsandbytes also requires load_format="bitsandbytes" to quantize while
+            # loading rather than expect an already-quantized checkpoint.
+            llm_kwargs["quantization"] = quantization
+            if quantization == "bitsandbytes":
+                llm_kwargs["load_format"] = "bitsandbytes"
+        self._llm = LLM(**llm_kwargs)
         self._lora_request = None
         if adapter_path:
             from vllm.lora.request import LoRARequest
