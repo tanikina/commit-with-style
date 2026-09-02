@@ -2,16 +2,19 @@
 name = "commit-with-style"
 version = "0.1.0"
 description = "Commit-message completion prototype: prompting strategies + LoRA fine-tuning, evaluated with LLM-as-judge and METEOR/ChrF/BERTScore"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
+
 dependencies = [
     "pydantic>=2.13",
     "sacrebleu>=2.6",
     "nltk>=3.10",
     "bert-score>=0.3.13",
-    "torch>=2.13,<2.14",
-    "transformers>=5.16",
+    "torch==2.10.0",
+    "transformers>=4.57.3,<5",
     "peft>=0.20",
     "accelerate>=1.14",
+    "vllm==0.18.1; sys_platform == 'linux'",
+    "nvidia-cudnn-cu12>=9,<10 ; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]
