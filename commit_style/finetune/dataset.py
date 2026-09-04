@@ -29,7 +29,10 @@ def build_sft_features(tokenizer, example: Example, max_length: int = 1536) -> d
         ],
         add_generation_prompt=True,
         tokenize=True,
-    )["input_ids"]
+    )
+    # In transformers 5.x+, apply_chat_template with tokenize=True returns a list directly
+    if isinstance(prompt_ids, dict):
+        prompt_ids = prompt_ids["input_ids"]
     completion_ids = tokenizer(
         example.reference_completion, add_special_tokens=False
     )["input_ids"] + [tokenizer.eos_token_id]

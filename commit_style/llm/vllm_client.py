@@ -50,18 +50,25 @@ class VLLMClient(LLMClient):
 
     def complete(self, system: str, user: str, max_tokens: int = 600) -> str:
         from vllm import SamplingParams
+        import inspect
 
         start = time.time()
-        [output] = self._llm.chat(
-            [[{"role": "system", "content": system}, {"role": "user", "content": user}]],
-            SamplingParams(max_tokens=max_tokens, temperature=0.2),
-            lora_request=self._lora_request,
+
+        # vllm 0.7.x may not support chat_template_kwargs yet
+        chat_kwargs = {
+            "messages": [[{"role": "system", "content": system}, {"role": "user", "content": user}]],
+            "sampling_params": SamplingParams(max_tokens=max_tokens, temperature=0.2),
+            "lora_request": self._lora_request,
+        }
+
+        # Only add chat_template_kwargs if supported (vllm 0.8+)
+        if "chat_template_kwargs" in inspect.signature(self._llm.chat).parameters:
             # Qwen3(.5)-family hybrid-reasoning models insert a chain-of-thought preamble
             # by default, which can consume the entire max_tokens budget before any answer
-            # is produced (see README). Unrecognized chat-template kwargs are silently
-            # ignored by HF's renderer, so this is safe to pass unconditionally.
-            chat_template_kwargs={"enable_thinking": False},
-        )
+            # is produced (see README).
+            chat_kwargs["chat_template_kwargs"] = {"enable_thinking": False}
+
+        [output] = self._llm.chat(**chat_kwargs)
         latency_s = time.time() - start
 
         self.last_usage = {
