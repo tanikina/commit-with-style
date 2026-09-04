@@ -7,6 +7,11 @@ HP_GRID = [
     LoraParams(r=8, alpha=16, dropout=0.05, lr=2e-4),
     LoraParams(r=16, alpha=32, dropout=0.05, lr=1e-4),
     LoraParams(r=8, alpha=16, dropout=0.1, lr=5e-5),
+    # Probes around the config_2 winner above, one knob at a time.
+    LoraParams(r=8, alpha=16, dropout=0.1, lr=1e-4),
+    LoraParams(r=16, alpha=32, dropout=0.1, lr=5e-5),
+    LoraParams(r=32, alpha=64, dropout=0.1, lr=5e-5),
+    LoraParams(r=8, alpha=16, dropout=0.0, lr=5e-5),
 ]
 
 
