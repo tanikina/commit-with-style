@@ -61,8 +61,10 @@ class MockLLMClient(LLMClient):
         if model_cls is JudgeScores:
             return JudgeScores(
                 coherence=4,
+                coherence_rationale="Mock judge: length/structure roughly matches history.",
                 fluency=4,
+                fluency_rationale="Mock judge: reasonably fluent.",
                 correctness=4,
-                rationale="Mock judge: plausible, on-topic, and reasonably fluent.",
+                correctness_rationale="Mock judge: plausible and on-topic.",
             )
         raise NotImplementedError(f"MockLLMClient has no fake response for {model_cls!r}")

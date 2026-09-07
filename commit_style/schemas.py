@@ -29,6 +29,8 @@ class VerificationResult(BaseModel):
 
 class JudgeScores(BaseModel):
     coherence: int
+    coherence_rationale: str
     fluency: int
+    fluency_rationale: str
     correctness: int
-    rationale: str
+    correctness_rationale: str
