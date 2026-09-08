@@ -32,7 +32,7 @@ from commit_style.strategies import Candidate
 
 DEFAULT_FILES = [
     "outputs/multijudge_strategies/strategy_gemini_multi_judge.jsonl",
-    "outputs/multijudge_strategies/strategy_qwen3_14_multi_judge.jsonl",
+    #"outputs/multijudge_strategies/strategy_qwen3_14_multi_judge.jsonl",
     "outputs/multijudge_strategies/strategy_qwen35_9b_multi_judge.jsonl",
 ]
 DEFAULT_JUDGES = ["grazie:openai-gpt-5", "grazie:anthropic-claude-sonnet-5"]
@@ -51,6 +51,12 @@ def write_rows(rows: list[dict], path: Path) -> None:
     tmp_path.replace(path)
 
 
+def write_row(row: dict, f) -> None:
+    """Write a single row to an open file handle."""
+    f.write(json.dumps(row) + "\n")
+    f.flush()  # Ensure data is written immediately
+
+
 def output_path(input_path: Path) -> Path:
     return input_path.with_name(f"{input_path.stem}_reannotated{input_path.suffix}")
 
@@ -65,48 +71,65 @@ def reannotate_file(
     out_path = output_path(input_path)
     rows = load_rows(out_path) if out_path.exists() else load_rows(input_path)
 
+    # Use tmp file for incremental writes
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+
     n_calls = 0
-    for i, row in enumerate(rows):
-        example = id_to_example.get(row["example_id"])
-        for jid, llm in judges.items():
-            existing = row["judge_scores"].get(jid, {})
-            if existing.get("coherence_rationale"):
-                continue
-            if max_calls is not None and n_calls >= max_calls:
-                write_rows(rows, out_path)
-                print(f"[reannotate_multijudge_strategy_scores] wrote {len(rows)} rows to {out_path} (max-calls reached)\n")
-                return rows, n_calls
-            if example is None:
-                print(f"[reannotate_multijudge_strategy_scores] {input_path}: no example for id={row['example_id']!r}, skipping row")
-                break
+    with tmp_path.open("w") as f:
+        for i, row in enumerate(rows):
+            row_modified = False
+            example = id_to_example.get(row["example_id"])
 
-            candidate = Candidate(
-                strategy=row["strategy"],
-                continuation=row["candidate_continuation"],
-                full_message=row["candidate_full_message"],
-            )
-            try:
-                scores = judge_candidate(llm, example, candidate)
-            except Exception as e:
-                print(f"[reannotate_multijudge_strategy_scores] {input_path}: ({i + 1}/{len(rows)}) judge={jid} error, skipping: {e}")
-                continue
+            for jid, llm in judges.items():
+                existing = row["judge_scores"].get(jid, {})
+                if existing.get("coherence_rationale"):
+                    continue
+                if max_calls is not None and n_calls >= max_calls:
+                    # Write current row if modified, then finalize
+                    if row_modified:
+                        write_row(row, f)
+                    # Write remaining unmodified rows
+                    for remaining_row in rows[i + (0 if row_modified else 1):]:
+                        write_row(remaining_row, f)
+                    tmp_path.replace(out_path)
+                    print(f"[reannotate_multijudge_strategy_scores] wrote {len(rows)} rows to {out_path} (max-calls reached)\n")
+                    return rows, n_calls
+                if example is None:
+                    print(f"[reannotate_multijudge_strategy_scores] {input_path}: no example for id={row['example_id']!r}, skipping row")
+                    break
 
-            n_calls += 1
-            print(f"[reannotate_multijudge_strategy_scores] {input_path}: ({i + 1}/{len(rows)}) judge={jid} reannotated example={row['example_id']}")
-            if debug:
-                print(f"[debug] example={row['example_id']} judge={jid} scores={scores.model_dump()}")
+                candidate = Candidate(
+                    strategy=row["strategy"],
+                    continuation=row["candidate_continuation"],
+                    full_message=row["candidate_full_message"],
+                )
+                try:
+                    scores = judge_candidate(llm, example, candidate)
+                except Exception as e:
+                    print(f"[reannotate_multijudge_strategy_scores] {input_path}: ({i + 1}/{len(rows)}) judge={jid} error, skipping: {e}")
+                    continue
 
-            merged = dict(existing)
-            merged["coherence"] = scores.coherence
-            merged["coherence_rationale"] = scores.coherence_rationale
-            merged["correctness"] = scores.correctness
-            merged["correctness_rationale"] = scores.correctness_rationale
-            if "fluency" not in merged:
-                merged["fluency"] = scores.fluency
-                merged["fluency_rationale"] = scores.fluency_rationale
-            row["judge_scores"][jid] = merged
+                n_calls += 1
+                print(f"[reannotate_multijudge_strategy_scores] {input_path}: ({i + 1}/{len(rows)}) judge={jid} reannotated example={row['example_id']}")
+                if debug:
+                    print(f"[debug] example={row['example_id']} judge={jid} scores={scores.model_dump()}")
 
-    write_rows(rows, out_path)
+                merged = dict(existing)
+                merged["coherence"] = scores.coherence
+                merged["coherence_rationale"] = scores.coherence_rationale
+                merged["correctness"] = scores.correctness
+                merged["correctness_rationale"] = scores.correctness_rationale
+                if "fluency" not in merged:
+                    merged["fluency"] = scores.fluency
+                    merged["fluency_rationale"] = scores.fluency_rationale
+                row["judge_scores"][jid] = merged
+                row_modified = True
+
+            # Write row after processing all judges for this row
+            write_row(row, f)
+
+    # Atomically replace output file with tmp file
+    tmp_path.replace(out_path)
     print(f"[reannotate_multijudge_strategy_scores] wrote {len(rows)} rows to {out_path}\n")
     return rows, n_calls
 
