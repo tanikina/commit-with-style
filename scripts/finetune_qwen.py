@@ -21,6 +21,29 @@ from commit_style.llm.factory import build_judges, build_llm
 from commit_style.pipeline import summarize, write_jsonl
 from commit_style.strategies import STRATEGIES
 
+FT_GRID_STRATEGIES = ["mixture", "original", "reference_guided", "structured", "vanilla"]
+FT_GRID_SEEDS = [1, 2, 3]
+
+
+def compute_ft_grid_intersection_ids(ft_dir: Path) -> set[str]:
+    """Ids present in every outputs/ft/{strategy}/seed{seed}/eval.jsonl file under ft_dir.
+
+    Some runs drop a few ids (generation errors), so the 15 ft-grid eval files don't all cover
+    the same ~200 final_eval ids. This is the fixed subsample every run can be filtered down to
+    for a fair, directly comparable judged-eval pass.
+    """
+    id_sets = []
+    for strategy in FT_GRID_STRATEGIES:
+        for seed in FT_GRID_SEEDS:
+            eval_path = ft_dir / strategy / f"seed{seed}" / "eval.jsonl"
+            if not eval_path.exists():
+                continue
+            with eval_path.open() as f:
+                id_sets.append({json.loads(line)["example_id"] for line in f if line.strip()})
+    if not id_sets:
+        raise SystemExit(f"--only-intersect-eval: no eval.jsonl files found under {ft_dir}")
+    return set.intersection(*id_sets)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="LoRA fine-tune a small Qwen model + hp-search + eval")
@@ -138,6 +161,22 @@ def main() -> None:
         "judged comparison, while --n-test still feeds training-time eval loss unchanged.",
     )
     parser.add_argument("--n-final-eval", type=int, default=200)
+    parser.add_argument(
+        "--only-intersect-eval",
+        action="store_true",
+        help="Restrict the judged final_eval pass to the fixed subsample of ids scored across "
+        "every existing outputs/ft/{strategy}/seed{seed}/eval.jsonl file under "
+        "--intersect-eval-ft-dir (currently 115 of the 200 final_eval ids, since a few runs "
+        "dropped ids to generation errors), so a new run stays directly comparable to the "
+        "existing 15-run ft grid. Only applies with --final-eval-split final_eval; no effect "
+        "otherwise.",
+    )
+    parser.add_argument(
+        "--intersect-eval-ft-dir",
+        default="outputs/ft",
+        help="Directory containing the {strategy}/seed{seed}/eval.jsonl grid used to compute "
+        "--only-intersect-eval's fixed id subsample.",
+    )
     parser.add_argument(
         "--run-label",
         default="finetuned",
@@ -271,6 +310,13 @@ def main() -> None:
             max_history_messages=args.max_history_messages,
         )
         print(f"Loaded {len(final_eval_examples)} final_eval examples for the judged comparison pass")
+        if args.only_intersect_eval:
+            intersect_ids = compute_ft_grid_intersection_ids(Path(args.intersect_eval_ft_dir))
+            final_eval_examples = [e for e in final_eval_examples if e.id in intersect_ids]
+            print(
+                f"Filtered to {len(final_eval_examples)} examples via --only-intersect-eval "
+                f"({args.intersect_eval_ft_dir})"
+            )
     else:
         final_eval_examples = test_examples
 
