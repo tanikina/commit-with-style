@@ -6,6 +6,11 @@ of a text log), this reads the raw per-example JSONL eval outputs, pulls in
 chrF/METEOR and usage (latency, token counts) alongside judge scores, and
 restricts every average to the intersection of example ids scored across all
 included files so runs with different drop-out counts stay comparable.
+
+Pass --base-model-eval to fold in one or more out-of-the-box (non-fine-tuned) baseline eval
+files for the same comparison, e.g. --base-model-eval outputs/qwen3_4b_eval_reannotated.jsonl.
+These are labelled base_<model> (derived from the filename) rather than <strategy>_seed<seed>,
+and join the same intersection-restricted aggregation as every other input.
 """
 
 from __future__ import annotations
@@ -45,6 +50,14 @@ def label_for(path: Path, root: Path) -> str:
     if parts and parts[-1] == "eval":
         parts = parts[:-1]
     return "_".join(parts)
+
+
+def base_model_label(path: Path) -> str:
+    name = path.stem
+    for suffix in ("_reannotated", "_eval"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+    return f"base_{name}"
 
 
 def split_seed(label: str) -> tuple[str, str]:
@@ -127,6 +140,16 @@ def main() -> None:
         type=Path,
         help="Prefix stripped from each input path when deriving its label (default: outputs/ft).",
     )
+    parser.add_argument(
+        "--base-model-eval",
+        nargs="+",
+        type=Path,
+        default=[],
+        metavar="PATH",
+        help="One or more out-of-the-box baseline eval.jsonl files to include alongside the "
+        "fine-tuned inputs, e.g. outputs/qwen3_4b_eval_reannotated.jsonl. Labelled base_<model> "
+        "instead of <strategy>_seed<seed>, and joins the same intersection-restricted aggregate.",
+    )
     args = parser.parse_args()
 
     labelled_rows: dict[str, list[dict]] = defaultdict(list)
@@ -135,6 +158,12 @@ def main() -> None:
         if rows is None:
             continue
         labelled_rows[label_for(path, args.root)].extend(rows)
+
+    for path in args.base_model_eval:
+        rows = load_rows(path)
+        if rows is None:
+            continue
+        labelled_rows[base_model_label(path)].extend(rows)
 
     if not labelled_rows:
         raise SystemExit("No usable rows found in the given input files.")
