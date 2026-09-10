@@ -600,3 +600,66 @@ Output rows are shaped identically to the fine-tuned runs' (including the `usage
 cost/latency field), so `outputs/ft/base_qwen3_5_4b/eval.jsonl` can be concatenated with the 15
 conditions' `eval.jsonl` files and fed straight into `commit_style.pipeline.summarize()` for a
 single side-by-side comparison table, keyed off `--run-label`/`strategy`.
+
+## Statistical significance testing
+
+Two utility scripts provide rigorous statistical analysis of the fine-tuning results:
+
+### Comparing fine-tuned strategies
+
+`util_scripts/significance_test_ft_eval.py` tests whether differences between the 5 training
+conditions are statistically significant. For each seed and metric:
+
+1. Runs a Friedman test across all strategies on matched examples (omnibus test)
+2. If significant (p < 0.05), performs pairwise Wilcoxon signed-rank tests
+3. Applies Holm-Bonferroni correction to control family-wise error rate
+4. Reports mean difference, bootstrap 95% CI, and adjusted p-value for each pair
+
+```bash
+python util_scripts/significance_test_ft_eval.py \
+  outputs_qwen34b/ft/*/seed*/eval_reannotated.jsonl \
+  --metrics coherence correctness fluency chrf \
+  --judge openai-gpt-5 \
+  -o results/significance_tests.json
+```
+
+### Comparing to baseline
+
+`util_scripts/compare_to_baseline.py` tests whether each fine-tuned strategy significantly
+outperforms the unmodified base model. For each seed/metric/strategy combination:
+
+1. Runs paired Wilcoxon signed-rank test against the baseline on matched examples
+2. Applies Holm-Bonferroni correction across all strategies for that seed/metric
+3. Reports mean difference (positive = FT is better), bootstrap 95% CI, and adjusted p-value
+
+```bash
+python util_scripts/compare_to_baseline.py \
+  outputs_qwen34b/qwen3_4b_eval_reannotated.jsonl \
+  outputs_qwen34b/ft/*/seed*/eval_reannotated.jsonl \
+  --metrics coherence correctness fluency chrf \
+  --output-csv results/baseline_comparison.csv
+```
+
+### Current results (Qwen3-4B evaluation)
+
+**All fine-tuning strategies show highly significant improvements over the base model** (all
+p < 0.001) across all metrics:
+
+- **chrF**: +11–14 points improvement, all strategies similar
+- **Fluency**: +1.3–1.6 points improvement, all strategies similar
+- **Coherence**: +1.4–1.6 points for original/mixture/reference_guided/vanilla; +1.0 for
+  structured
+- **Correctness**: +0.9–1.0 for structured (best); +0.6–0.7 for mixture/vanilla/reference_guided;
+  +0.3–0.5 for original (smallest improvement)
+
+**Differences between fine-tuned strategies:**
+
+- **Correctness**: `structured` significantly outperforms `original` by ~0.5 points across all 3
+  seeds (p < 0.05 after correction), making it the best strategy for factual accuracy
+- **Coherence**: `structured` significantly underperforms other strategies by ~0.4–0.6 points in
+  2 out of 3 seeds, trading style-matching for correctness
+- **Fluency and chrF**: No significant differences between strategies (all p > 0.19)
+
+The trade-off is clear: `structured` prioritizes correctness (fact-checking via verification step)
+at a small cost to stylistic coherence, while `original`/`vanilla`/`reference_guided`/`mixture`
+balance both aspects more evenly.
