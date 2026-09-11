@@ -43,6 +43,46 @@ into `prefix`/`completion` such that `prefix + completion == msg`). No separate
 download/build step is needed — `commit_style/data.py` streams and stratifies samples from
 this file.
 
+### Dataset characteristics
+
+Computed by `util_scripts/describe_data.py` (re-run it after swapping in a new data file to
+refresh these numbers).
+
+2000 rows per language, evenly split:
+
+| language | rows | share |
+|---|---|---|
+| Java | 2000 | 25% |
+| JavaScript | 2000 | 25% |
+| Kotlin | 2000 | 25% |
+| Python | 2000 | 25% |
+
+Drawn from 187 repos. Commit timestamps (`committer_timestamp`) span **2022-01-01 ->
+2025-05-28**.
+
+| field | mean | min | max |
+|---|---|---|---|
+| prefix length (chars) | 19.3 | 2 | 146 |
+| full message length (chars) | 49.3 | 14 | 247 |
+| commit history length (# prior messages available) | 84.5 | 0 | 917 |
+| diff length (chars) | 6852.3 | 132 | 204182 |
+| files changed per commit | 5.5 | 1 | 834 |
+
+Prefix length isn't a free-running random cut — the source file was built with a fixed,
+3-way stratified truncation fraction. For each row, `len(prefix) / len_msg_chr` clusters
+tightly around one of **20% / 40% / 60% of the full message length**, in roughly even thirds
+(2675 / 2664 / 2661 rows respectively). The cut is a plain character-index slice, not
+snapped to a word or sentence boundary — about two-thirds of prefixes end mid-word, with
+`completion` continuing the same word (e.g. `prefix` ending `"...if flow is read-o"` and
+`completion` continuing `"nly flows..."`).
+
+These are raw, pre-truncation figures from the source rows. In practice, every pipeline caps
+what actually reaches the LLM: `max_history_messages` (default 5, via `truncate_history`) keeps
+only the last few history entries, and `max_diff_chars` (default 4000, via `render_diff`) caps
+the rendered diff — see [Generation strategies](#generation-strategies) below.
+
+### Splits
+
 For anything that trains or evaluates a model (as opposed to a quick `load_examples`-based
 smoke test), `load_project_splits` draws three sets from one shared partition:
 
@@ -51,6 +91,16 @@ smoke test), `load_project_splits` draws three sets from one shared partition:
   (Phase 1).
 - **`finetune_test`** (default 300 rows) — fixed set for LoRA hp-search config selection and
   the final fine-tuned-model evaluation (Phase 2).
+
+Realized counts at `seed=0` (the default; per-language quota flooring means these can land a
+few rows under the requested target):
+
+| split | n | repos | languages |
+|---|---|---|---|
+| train (fine-tuning) | 996 | 61 | Java=249, JavaScript=249, Kotlin=249, Python=249 |
+| strategy_val (strategy comparison, Phase 1) | 192 | 37 | Java=48, JavaScript=48, Kotlin=48, Python=48 |
+| finetune_test (hp-search + Phase 2 selection) | 300 | 43 | Java=75, JavaScript=75, Kotlin=75, Python=75 |
+| final_eval (Phase 2 holdout, see below) | 200 | 45 | Java=56, JavaScript=59, Kotlin=13, Python=72 |
 
 All three are **mutually disjoint by `repo_name`**: every repo's commits are assigned
 wholesale to exactly one split, so a model is never evaluated on commits from a repo it saw
