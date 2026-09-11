@@ -6,7 +6,8 @@ scripts/reannotate_multijudge_strategy_scores.py) — no LLM calls, this only re
 judge_scores. Prints:
 
 1. A per-file and pooled coherence/fluency/correctness score table per strategy/judge (reusing
-   commit_style.pipeline.summarize).
+   commit_style.pipeline.summarize), plus a chrF/METEOR table per strategy from each row's
+   `metrics` field (judge-independent, so it's printed once per file/pool rather than per judge).
 2. For coherence and correctness (fluency is skipped — its rubric wasn't touched this session),
    the top --top-k clusters of "bad" (score <= --threshold) rationale texts, pooled across
    strategies/files/judges into one embedding space so cluster membership is directly comparable
@@ -28,7 +29,7 @@ back to each strategy's full (unequal) row count instead.
 import argparse
 import json
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -113,6 +114,30 @@ def collect_bad_rationale_items(labelled_rows: dict[str, list[dict]], dimension:
                     }
                 )
     return items
+
+
+def summarize_metrics(rows: list[dict]) -> str:
+    by_strategy: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        if row.get("metrics"):
+            by_strategy[row["strategy"]].append(row["metrics"])
+    if not by_strategy:
+        return ""
+
+    def _mean(metrics_list: list[dict], key: str) -> float | None:
+        vals = [m[key] for m in metrics_list if m.get(key) is not None]
+        return sum(vals) / len(vals) if vals else None
+
+    def _fmt(value: float | None) -> str:
+        return f"{value:.3f}" if value is not None else "n/a"
+
+    lines = ["--- chrF / METEOR ---", f"{'strategy':<18}{'n':>4}{'chrf':>10}{'meteor':>10}"]
+    for strategy, metrics_list in by_strategy.items():
+        n = len(metrics_list)
+        lines.append(
+            f"{strategy:<18}{n:>4}{_fmt(_mean(metrics_list, 'chrf')):>10}{_fmt(_mean(metrics_list, 'meteor')):>10}"
+        )
+    return "\n".join(lines)
 
 
 def cluster_bad_rationales(items: list[dict], top_k: int, embedding_backend: str, embedding_model: str) -> list[dict]:
@@ -202,10 +227,12 @@ def main() -> None:
     for label, rows in labelled_rows.items():
         print(f"\n--- {label} ---")
         print(summarize(rows))
+        print(summarize_metrics(rows))
 
     if len(labelled_rows) > 1:
         print("\n=== pooled score summary (all files) ===")
         print(summarize(all_rows))
+        print(summarize_metrics(all_rows))
 
     for dimension in DIMENSIONS:
         items = collect_bad_rationale_items(labelled_rows, dimension, args.threshold)
