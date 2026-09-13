@@ -320,11 +320,47 @@ def main() -> None:
         for metric in args.metrics:
             print(f"[compare_to_baseline] Testing {seed} / {metric}...", file=sys.stderr)
 
-            comparisons = []
+            # First, find the intersection of example IDs across ALL strategies AND baseline
+            all_id_sets = []
+            all_strategy_scores = {}
+
             for strategy, rows in by_seed[seed].items():
                 ft_scores = extract_ft_scores(rows, metric)
+                all_strategy_scores[strategy] = ft_scores
+                all_id_sets.append(set(ft_scores.keys()))
+
+            # Add baseline IDs (only those with non-None scores for this metric)
+            baseline_valid_ids = {
+                ex_id for ex_id in baseline_scores.keys()
+                if baseline_scores[ex_id][metric] is not None
+            }
+            all_id_sets.append(baseline_valid_ids)
+
+            # Compute intersection across all strategies AND baseline
+            common_ids = set.intersection(*all_id_sets) if all_id_sets else set()
+
+            if len(common_ids) < 3:
+                print(
+                    f"[compare_to_baseline] Warning: only {len(common_ids)} common examples "
+                    f"for {seed}/{metric}, skipping",
+                    file=sys.stderr,
+                )
+                continue
+
+            print(
+                f"[compare_to_baseline]   Using {len(common_ids)} common examples across "
+                f"all strategies and baseline",
+                file=sys.stderr,
+            )
+
+            # Now compare each strategy to baseline using the SAME intersection
+            comparisons = []
+            for strategy in sorted(all_strategy_scores.keys()):
+                ft_scores = all_strategy_scores[strategy]
+                # Filter to common IDs only
+                ft_scores_filtered = {ex_id: ft_scores[ex_id] for ex_id in common_ids}
                 result = compare_strategy_to_baseline(
-                    ft_scores, baseline_scores, metric, strategy, seed
+                    ft_scores_filtered, baseline_scores, metric, strategy, seed
                 )
                 comparisons.append(result)
 
