@@ -69,6 +69,7 @@ def split_seed(label: str) -> tuple[str, str]:
 
 def load_rows(path: Path) -> list[dict] | None:
     with path.open() as f:
+        print("Loading:", path)
         rows = [json.loads(line) for line in f if line.strip()]
     judge_ids = {jid for row in rows for jid in row.get("judge_scores", {})}
     if judge_ids == {"mock"}:
